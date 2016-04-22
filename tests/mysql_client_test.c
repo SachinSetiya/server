@@ -2263,6 +2263,8 @@ static void test_ps_query_cache()
 
   rc= mysql_query(mysql, "SET SQL_MODE=''");
   myquery(rc);
+  rc= mysql_query(mysql, "SET NAMES UTF8");
+  myquery(rc);
 
   /* prepare the table */
 
@@ -2307,6 +2309,8 @@ static void test_ps_query_cache()
         DIE_UNLESS(0);
       }
       rc= mysql_query(lmysql, "SET SQL_MODE=''");
+      myquery(rc);
+      rc= mysql_query(mysql, "SET NAMES UTF8");
       myquery(rc);
 
       if (!opt_silent)
@@ -16647,7 +16651,7 @@ static void test_bug30472()
 
   /* Switch client character set. */
 
-  DIE_IF(mysql_set_character_set(&con, "utf8"));
+  DIE_IF(mysql_set_character_set(&con, "latin2"));
 
   /* Retrieve character set information. */
 
@@ -16663,10 +16667,10 @@ static void test_bug30472()
       2) new character set is different from the original one.
   */
 
-  DIE_UNLESS(strcmp(character_set_name_2, "utf8") == 0);
-  DIE_UNLESS(strcmp(character_set_client_2, "utf8") == 0);
-  DIE_UNLESS(strcmp(character_set_results_2, "utf8") == 0);
-  DIE_UNLESS(strcmp(collation_connnection_2, "utf8_general_ci") == 0);
+  DIE_UNLESS(strcmp(character_set_name_2, "latin2") == 0);
+  DIE_UNLESS(strcmp(character_set_client_2, "latin2") == 0);
+  DIE_UNLESS(strcmp(character_set_results_2, "latin2") == 0);
+  DIE_UNLESS(strcmp(collation_connnection_2, "latin2_general_ci") == 0);
 
   DIE_UNLESS(strcmp(character_set_name_1, character_set_name_2) != 0);
   DIE_UNLESS(strcmp(character_set_client_1, character_set_client_2) != 0);
