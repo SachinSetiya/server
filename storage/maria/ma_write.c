@@ -129,6 +129,8 @@ int maria_write(MARIA_HA *info, uchar *record)
 	}
 	ha_checksum unique_hash= _ma_unique_hash(share->uniqueinfo,record);
 	if(add_key_to_hash_table((ma_hash_table*)info->state->hash_table,unique_hash,info->state->records)){
+		//here check for duplicates 
+		//i really do not know to get record by record offset
 		goto err2;
 	}
 //  if (share->state.header.uniques)
