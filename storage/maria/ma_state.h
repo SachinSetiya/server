@@ -14,7 +14,7 @@
    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
 /* Struct to store tables in use by one transaction */
-
+//#include"ma_hash_table.h"
 typedef struct st_maria_status_info
 {
   ha_rows records;                      /* Rows in table */
@@ -24,6 +24,7 @@ typedef struct st_maria_status_info
   my_off_t key_file_length;
   my_off_t data_file_length;
   ha_checksum checksum;
+  void * hash_table;
   uint32 changed:1,                     /* Set if table was changed */
          no_transid:1;                  /* Set if no transid was set on rows */
 } MARIA_STATUS_INFO;

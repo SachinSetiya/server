@@ -763,7 +763,7 @@ uint _mi_get_static_key(register MI_KEYDEF *keyinfo, uint nod_flag,
 
 
 /*
-  get key witch is packed against previous key or key with a NULL column.
+  get key which is packed against previous key or key with a NULL column.
 
   SYNOPSIS
     _mi_get_pack_key()

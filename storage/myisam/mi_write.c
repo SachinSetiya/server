@@ -122,7 +122,7 @@ int mi_write(MI_INFO *info, uchar *record)
       }
       else
       {
-        if (share->keyinfo[i].ck_insert(info,i,buff,
+        if (share->keyinfo[i].ck_insert(info,i,buff, //work
 			_mi_make_key(info,i,buff,record,filepos)))
         {
           if (local_lock_tree)
@@ -258,7 +258,7 @@ int _mi_ck_write(MI_INFO *info, uint keynr, uchar *key, uint key_length)
  **********************************************************************/
 
 int _mi_ck_write_btree(register MI_INFO *info, uint keynr, uchar *key,
-		       uint key_length)
+		       uint key_length)//work
 {
   int error;
   uint comp_flag;
@@ -335,7 +335,7 @@ int _mi_enlarge_root(MI_INFO *info, MI_KEYDEF *keyinfo, uchar *key,
 		   0  = ok
 		   1  = key should be stored in higher tree
 	*/
-
+//work
 static int w_search(register MI_INFO *info, register MI_KEYDEF *keyinfo,
 		    uint comp_flag, uchar *key, uint key_length, my_off_t page,
 		    uchar *father_buff, uchar *father_keypos,
