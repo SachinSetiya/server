@@ -415,7 +415,7 @@ err:
   info->update= (HA_STATE_CHANGED | HA_STATE_WRITTEN | HA_STATE_ROW_CHANGED);
   my_errno=save_errno;
 err2:
-  save_errno=my_errno=1;
+  save_errno=my_errno=141;
 //  DBUG_ASSERT(save_errno);
 //  if (!save_errno)
 //    save_errno= HA_ERR_INTERNAL_ERROR;          /* Should never happen */
