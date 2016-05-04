@@ -123,7 +123,7 @@ int maria_write(MARIA_HA *info, uchar *record)
   if (_ma_mark_file_changed(share))
     goto err2;
 	
-  /* Calculate and check all unique constraints */
+  if(share->state.header.uniques==1){
 	if(!info->state->hash_table){
 		info->state->hash_table = ma_create_hash_table(100000);
 	}
@@ -133,23 +133,27 @@ int maria_write(MARIA_HA *info, uchar *record)
 		//i really do not know to get record by record offset
 		goto err2;
 	}
-//  if (share->state.header.uniques)
-//  {
-//    for (i=0 ; i < share->state.header.uniques ; i++)
-//    {
-//      MARIA_UNIQUEDEF *def= share->uniqueinfo + i;
-//      ha_checksum unique_hash= _ma_unique_hash(share->uniqueinfo+i,record);
-//      if (maria_is_key_active(share->state.key_map, def->key))
-//      {
-//        if (_ma_check_unique(info, def, record,
-//                             unique_hash, HA_OFFSET_ERROR))
-//          goto err2;
-//      }
-//      else
-//        maria_unique_store(record+ share->keyinfo[def->key].seg->start,
-//                           unique_hash);
-//    }
-//  }
+  }else{
+	/* Calculate and check all unique constraints */
+  if (share->state.header.uniques)
+  {
+    for (i=0 ; i < share->state.header.uniques ; i++)
+    {
+      MARIA_UNIQUEDEF *def= share->uniqueinfo + i;
+      ha_checksum unique_hash= _ma_unique_hash(share->uniqueinfo+i,record);
+      if (maria_is_key_active(share->state.key_map, def->key))
+      {
+        if (_ma_check_unique(info, def, record,
+                             unique_hash, HA_OFFSET_ERROR))
+          goto err2;
+      }
+      else
+        maria_unique_store(record+ share->keyinfo[def->key].seg->start,
+                           unique_hash);
+    }
+  }
+  
+  }
 
 
   /* Ensure we don't try to restore auto_increment if it doesn't change */
@@ -167,125 +171,126 @@ int maria_write(MARIA_HA *info, uchar *record)
         HA_OFFSET_ERROR)
       goto err2;
   }
-
+#ifdef 0
   /* Write all keys to indextree */
   buff= info->lastkey_buff2;
-//  for (i=0, keyinfo= share->keyinfo ; i < share->base.keys ; i++, keyinfo++)
-//  {
-//    MARIA_KEY int_key;
-//    if (maria_is_key_active(share->state.key_map, i))
-//    {
-//      my_bool local_lock_tree= (lock_tree &&
-//                                !(info->bulk_insert &&
-//                                  is_tree_inited(&info->bulk_insert[i])));
-//      if (local_lock_tree)
-//      {
-//	mysql_rwlock_wrlock(&keyinfo->root_lock);
-//	keyinfo->version++;
-//      }
-//      if (keyinfo->flag & HA_FULLTEXT )
-//      {
-//        if (_ma_ft_add(info,i, buff,record,filepos))
-//        {
-//	  if (local_lock_tree)
-//	    mysql_rwlock_unlock(&keyinfo->root_lock);
-//          DBUG_PRINT("error",("Got error: %d on write",my_errno));
-//          goto err;
-//        }
-//      }
-//      else
-//      {
-//        while (keyinfo->ck_insert(info,
-//                                  (*keyinfo->make_key)(info, &int_key, i,
-//                                                       buff, record, filepos,
-//                                                       info->trn->trid)))
-//        {
-//          TRN *blocker;
-//          DBUG_PRINT("error",("Got error: %d on write",my_errno));
-//          /*
-//            explicit check to filter out temp tables, they aren't
-//            transactional and don't have a proper TRN so the code
-//            below doesn't work for them.
-//            Also, filter out non-thread maria use, and table modified in
-//            the same transaction.
-//            At last, filter out non-dup-unique errors.
-//          */
-//          if (!local_lock_tree)
-//            goto err;
-//          if (info->dup_key_trid == info->trn->trid ||
-//              my_errno != HA_ERR_FOUND_DUPP_KEY)
-//          {
-//	    mysql_rwlock_unlock(&keyinfo->root_lock);
-//            goto err;
-//          }
-//          /* Different TrIDs: table must be transactional */
-//          DBUG_ASSERT(share->base.born_transactional);
-//          /*
-//            If transactions are disabled, and dup_key_trid is different from
-//            our TrID, it must be ALTER TABLE with dup_key_trid==0 (no
-//            transaction). ALTER TABLE does have MARIA_HA::TRN not dummy but
-//            puts TrID=0 in rows/keys.
-//          */
-//          DBUG_ASSERT(share->now_transactional ||
-//                      (info->dup_key_trid == 0));
-//          blocker= trnman_trid_to_trn(info->trn, info->dup_key_trid);
-//          /*
-//            if blocker TRN was not found, it means that the conflicting
-//            transaction was committed long time ago. It could not be
-//            aborted, as it would have to wait on the key tree lock
-//            to remove the conflicting key it has inserted.
-//          */
-//          if (!blocker || blocker->commit_trid != ~(TrID)0)
-//          { /* committed */
-//            if (blocker)
-//              mysql_mutex_unlock(& blocker->state_lock);
-//            mysql_rwlock_unlock(&keyinfo->root_lock);
-//            goto err;
-//          }
-//          mysql_rwlock_unlock(&keyinfo->root_lock);
-//          {
-//            /* running. now we wait */
-//            WT_RESOURCE_ID rc;
-//            int res;
-//            PSI_stage_info old_stage_info;
-//
-//            rc.type= &ma_rc_dup_unique;
-//            /* TODO savepoint id when we'll have them */
-//            rc.value= (intptr)blocker;
-//            res= wt_thd_will_wait_for(info->trn->wt, blocker->wt, & rc);
-//            if (res != WT_OK)
-//            {
-//              mysql_mutex_unlock(& blocker->state_lock);
-//              my_errno= HA_ERR_LOCK_DEADLOCK;
-//              goto err;
-//            }
-//            proc_info_hook(0, &stage_waiting_for_a_resource, &old_stage_info,
-//                           __func__, __FILE__, __LINE__);
-//            res= wt_thd_cond_timedwait(info->trn->wt, & blocker->state_lock);
-//            proc_info_hook(0, &old_stage_info, 0, __func__, __FILE__, __LINE__);
-//
-//            mysql_mutex_unlock(& blocker->state_lock);
-//            if (res != WT_OK)
-//            {
-//              my_errno= res == WT_TIMEOUT ? HA_ERR_LOCK_WAIT_TIMEOUT
-//                                          : HA_ERR_LOCK_DEADLOCK;
-//              goto err;
-//            }
-//          }
-//          mysql_rwlock_wrlock(&keyinfo->root_lock);
-//#ifndef MARIA_CANNOT_ROLLBACK
-//          keyinfo->version++;
-//#endif
-//        }
-//      }
-//
-//      /* The above changed info->lastkey2. Inform maria_rnext_same(). */
-//      info->update&= ~HA_STATE_RNEXT_SAME;
-//
-//      if (local_lock_tree)
-//        mysql_rwlock_unlock(&keyinfo->root_lock);
-//    }
-//  }
+  for (i=0, keyinfo= share->keyinfo ; i < share->base.keys ; i++, keyinfo++)
+  {
+    MARIA_KEY int_key;
+    if (maria_is_key_active(share->state.key_map, i))
+    {
+      my_bool local_lock_tree= (lock_tree &&
+                                !(info->bulk_insert &&
+                                  is_tree_inited(&info->bulk_insert[i])));
+      if (local_lock_tree)
+      {
+	mysql_rwlock_wrlock(&keyinfo->root_lock);
+	keyinfo->version++;
+      }
+      if (keyinfo->flag & HA_FULLTEXT )
+      {
+        if (_ma_ft_add(info,i, buff,record,filepos))
+        {
+	  if (local_lock_tree)
+	    mysql_rwlock_unlock(&keyinfo->root_lock);
+          DBUG_PRINT("error",("Got error: %d on write",my_errno));
+          goto err;
+        }
+      }
+      else
+      {
+        while (keyinfo->ck_insert(info,
+                                  (*keyinfo->make_key)(info, &int_key, i,
+                                                       buff, record, filepos,
+                                                       info->trn->trid)))
+        {
+          TRN *blocker;
+          DBUG_PRINT("error",("Got error: %d on write",my_errno));
+          /*
+            explicit check to filter out temp tables, they aren't
+            transactional and don't have a proper TRN so the code
+            below doesn't work for them.
+            Also, filter out non-thread maria use, and table modified in
+            the same transaction.
+            At last, filter out non-dup-unique errors.
+          */
+          if (!local_lock_tree)
+            goto err;
+          if (info->dup_key_trid == info->trn->trid ||
+              my_errno != HA_ERR_FOUND_DUPP_KEY)
+          {
+	    mysql_rwlock_unlock(&keyinfo->root_lock);
+            goto err;
+          }
+          /* Different TrIDs: table must be transactional */
+          DBUG_ASSERT(share->base.born_transactional);
+          /*
+            If transactions are disabled, and dup_key_trid is different from
+            our TrID, it must be ALTER TABLE with dup_key_trid==0 (no
+            transaction). ALTER TABLE does have MARIA_HA::TRN not dummy but
+            puts TrID=0 in rows/keys.
+          */
+          DBUG_ASSERT(share->now_transactional ||
+                      (info->dup_key_trid == 0));
+          blocker= trnman_trid_to_trn(info->trn, info->dup_key_trid);
+          /*
+            if blocker TRN was not found, it means that the conflicting
+            transaction was committed long time ago. It could not be
+            aborted, as it would have to wait on the key tree lock
+            to remove the conflicting key it has inserted.
+          */
+          if (!blocker || blocker->commit_trid != ~(TrID)0)
+          { /* committed */
+            if (blocker)
+              mysql_mutex_unlock(& blocker->state_lock);
+            mysql_rwlock_unlock(&keyinfo->root_lock);
+            goto err;
+          }
+          mysql_rwlock_unlock(&keyinfo->root_lock);
+          {
+            /* running. now we wait */
+            WT_RESOURCE_ID rc;
+            int res;
+            PSI_stage_info old_stage_info;
+
+            rc.type= &ma_rc_dup_unique;
+            /* TODO savepoint id when we'll have them */
+            rc.value= (intptr)blocker;
+            res= wt_thd_will_wait_for(info->trn->wt, blocker->wt, & rc);
+            if (res != WT_OK)
+            {
+              mysql_mutex_unlock(& blocker->state_lock);
+              my_errno= HA_ERR_LOCK_DEADLOCK;
+              goto err;
+            }
+            proc_info_hook(0, &stage_waiting_for_a_resource, &old_stage_info,
+                           __func__, __FILE__, __LINE__);
+            res= wt_thd_cond_timedwait(info->trn->wt, & blocker->state_lock);
+            proc_info_hook(0, &old_stage_info, 0, __func__, __FILE__, __LINE__);
+
+            mysql_mutex_unlock(& blocker->state_lock);
+            if (res != WT_OK)
+            {
+              my_errno= res == WT_TIMEOUT ? HA_ERR_LOCK_WAIT_TIMEOUT
+                                          : HA_ERR_LOCK_DEADLOCK;
+              goto err;
+            }
+          }
+          mysql_rwlock_wrlock(&keyinfo->root_lock);
+#ifndef MARIA_CANNOT_ROLLBACK
+          keyinfo->version++;
+#endif
+        }
+      }
+
+      /* The above changed info->lastkey2. Inform maria_rnext_same(). */
+      info->update&= ~HA_STATE_RNEXT_SAME;
+
+      if (local_lock_tree)
+        mysql_rwlock_unlock(&keyinfo->root_lock);
+    }
+  }
+#endif
   if (share->calc_write_checksum)
     info->cur_row.checksum= (*share->calc_write_checksum)(info,record);
   if (filepos != HA_OFFSET_ERROR)
