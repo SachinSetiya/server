@@ -3,7 +3,7 @@
 typedef struct ma_hash_table_element{
 	unsigned int hash_code;
 	unsigned int  record_offset;
-	struct ma_hash_table * next; //we will use single link list because no delete operations
+	struct ma_hash_table_element * next; //we will use single link list because no delete operations
 } ma_hash_table_element;
 
 typedef struct ma_hash_table{
@@ -11,7 +11,7 @@ typedef struct ma_hash_table{
 	ma_hash_table_element * h_t_e;
 }ma_hash_table;
 ma_hash_table * ma_create_hash_table(int size){
-	ma_hash_table_element * _ht = (ma_hash_table *)my_malloc(sizeof(ma_hash_table)*size,MYF(MY_WME));
+	ma_hash_table_element * _ht = (ma_hash_table_element *)my_malloc(sizeof(ma_hash_table_element)*size,MYF(MY_WME));
 	ma_hash_table_element * temp=_ht;
 	for(int i=0;i<size;i++){
 		temp->next=NULL;

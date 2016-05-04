@@ -93,7 +93,6 @@ int maria_write(MARIA_HA *info, uchar *record)
   my_bool lock_tree= share->lock_key_trees;
   my_bool fatal_error;
   MARIA_KEYDEF *keyinfo;
-  ma_hash_table *ht;
   DBUG_ENTER("maria_write");
   DBUG_PRINT("enter",("index_file: %d  data_file: %d",
                       share->kfile.file, info->dfile.file));
@@ -122,8 +121,7 @@ int maria_write(MARIA_HA *info, uchar *record)
   }
   if (_ma_mark_file_changed(share))
     goto err2;
-	
-  if(share->state.header.uniques==1){
+    
 	if(!info->state->hash_table){
 		info->state->hash_table = ma_create_hash_table(100000);
 	}
@@ -133,7 +131,7 @@ int maria_write(MARIA_HA *info, uchar *record)
 		//i really do not know to get record by record offset
 		goto err2;
 	}
-  }else{
+  #ifdef whatever
 	/* Calculate and check all unique constraints */
   if (share->state.header.uniques)
   {
@@ -153,7 +151,7 @@ int maria_write(MARIA_HA *info, uchar *record)
     }
   }
   
-  }
+  #endif
 
 
   /* Ensure we don't try to restore auto_increment if it doesn't change */
@@ -171,9 +169,10 @@ int maria_write(MARIA_HA *info, uchar *record)
         HA_OFFSET_ERROR)
       goto err2;
   }
-#ifdef 0
+
   /* Write all keys to indextree */
   buff= info->lastkey_buff2;
+ #ifdef whatever
   for (i=0, keyinfo= share->keyinfo ; i < share->base.keys ; i++, keyinfo++)
   {
     MARIA_KEY int_key;
@@ -290,7 +289,7 @@ int maria_write(MARIA_HA *info, uchar *record)
         mysql_rwlock_unlock(&keyinfo->root_lock);
     }
   }
-#endif
+ #endif
   if (share->calc_write_checksum)
     info->cur_row.checksum= (*share->calc_write_checksum)(info,record);
   if (filepos != HA_OFFSET_ERROR)
