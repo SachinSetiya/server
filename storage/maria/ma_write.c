@@ -423,11 +423,11 @@ err:
   my_errno=save_errno;
 err2:
   save_errno=my_errno=141;
-//  DBUG_ASSERT(save_errno);
-//  if (!save_errno)
-//    save_errno= HA_ERR_INTERNAL_ERROR;          /* Should never happen */
-//  DBUG_PRINT("error", ("got error: %d", save_errno));
-//  _ma_writeinfo(info,WRITEINFO_UPDATE_KEYFILE);
+  DBUG_ASSERT(save_errno);
+  if (!save_errno)
+    save_errno= HA_ERR_INTERNAL_ERROR;          /* Should never happen */
+  DBUG_PRINT("error", ("got error: %d", save_errno));
+  _ma_writeinfo(info,WRITEINFO_UPDATE_KEYFILE);
   DBUG_RETURN(my_errno=save_errno);
 } /* maria_write */
 
