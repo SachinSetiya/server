@@ -367,7 +367,69 @@ int mysql_update(THD *thd,
 
   if (check_unique_table(thd, table_list))
     DBUG_RETURN(TRUE);
+  /*
+   * Code for table unique
 
+   */
+  /*
+     currently i am just adding keyinfo to list
+     if any of its fields matches to fields list
+     but this code should be improved one limitatation is
+     consider this
+       unique (a,b,c)
+       unique (a,b)
+       unique (a)
+     if there is a field a in field list then it will include
+     all three keys ideally it should have only last one
+     but this kind of situation arises rarerly but
+     this could happen most of time
+       unique (a,b)
+       unique (a,c)
+     in this code we need to include both keys
+    */
+  //TODO a better name
+  typedef struct dupl_key_rec
+  {
+    uchar * record;
+    ulong rec_pos; // position of record in temp buffer
+  } dupl_key_rec;
+
+  typedef struct dupl_key_stack
+  {
+    uint key;
+    List<dupl_key_rec> *stack;
+  } dupl_key_stack;
+
+  List <dupl_key_stack> keys_stack;
+  List_iterator<dupl_key_stack> keys_stack_iter(keys_stack);
+  KEY *keyinfo= table->key_info;
+  KEY_PART_INFO *key_part;
+  List_iterator_fast<Item> f_iter(fields);
+  Item_field *fld_item;
+  ulong records_position= 0;
+  for (uint i=0; i< table->s->keys; i++, keyinfo++)
+  {
+    if (!keyinfo->flags & HA_NOSAME)
+      continue;
+    key_part= keyinfo->key_part;
+    for (uint j=0; j<keyinfo->user_defined_key_parts; j++, key_part++)
+    {
+      f_iter.rewind();
+      while ((fld_item= (Item_field *)f_iter++))
+      {
+        if ( fld_item->field && !my_strcasecmp(system_charset_info,
+              fld_item->field->field_name, key_part->field->field_name))
+        {
+           dupl_key_stack * tmp= (dupl_key_stack *)thd->alloc(sizeof(dupl_key_stack));
+           tmp->key= i;
+           tmp->stack= new(thd->mem_root) List<dupl_key_rec>();
+           keys_stack.push_back(tmp);
+           goto exit;
+        }
+      }
+    }
+exit:{}
+  }
   switch_to_nullable_trigger_fields(fields, table);
   switch_to_nullable_trigger_fields(values, table);
 
@@ -526,7 +588,8 @@ int mysql_update(THD *thd,
   DBUG_EXECUTE_IF("show_explain_probe_update_exec_start", 
                   dbug_serve_apcs(thd, 1););
   
-  if (query_plan.using_filesort || query_plan.using_io_buffer)
+  if (query_plan.using_filesort || query_plan.using_io_buffer
+       || keys_stack.elements )
   {
     /*
       We can't update table directly;  We must first search after all
@@ -809,14 +872,67 @@ int mysql_update(THD *thd,
           /* Non-batched update */
 	  error= table->file->ha_update_row(table->record[1],
                                             table->record[0]);
+
         }
         if (!error || error == HA_ERR_RECORD_IS_THE_SAME)
 	{
           if (error != HA_ERR_RECORD_IS_THE_SAME)
+          {
             updated++;
+            /* here need to see whether the */
+            if (keys_stack.elements)
+            {
+              dupl_key_stack * key_stack;
+              keys_stack_iter.rewind();
+              while ((key_stack = keys_stack_iter++))
+              {
+               dupl_key_rec * d_rec;
+               while ((d_rec= key_stack->stack->pop()))
+                if (memcmp(d_rec->record,table->record[1],
+                           table->s->reclength))
+                {
+                  restore_record_buff(table,d_rec->record);
+                  //copy the old record
+                  table->file->ha_rnd_pos(table->record[1],select->file.write_buffer
+                      +d_rec->rec_pos*table->file->ref_length);
+                  error= table->file->ha_update_row(table->record[1],table->record[0]);
+                  if (error)
+                  {
+                    //some shit really happened
+                    goto err;
+                  }
+                }
+              }
+            }
+          }
           else
             error= 0;
 	}
+				else if (error == HA_ERR_FOUND_DUPP_KEY && keys_stack.elements)
+				{
+					/* Find the key which is violeted */
+					dupl_key_stack *key_stack;
+					keys_stack_iter.rewind();
+					//there can be more then one key which is voileted
+					// but all these keys index will be greater then
+					// start_dup_key
+					uint start_dupp_key= table->file->get_dup_key(error);
+					keys_stack_iter.rewind();
+					while (( key_stack= keys_stack_iter++))
+					{
+						if (key_stack->key == start_dupp_key)
+						{
+							/* we know for surity that this key is voileted*/
+							dupl_key_rec *rec= (dupl_key_rec *) thd->alloc
+																		 (sizeof(dupl_key_rec));
+							rec->rec_pos= records_position;
+							rec->record= (uchar *) thd->alloc(table->s->reclength);
+							memcpy(rec->record,table->record[0],table->s->reclength);
+							key_stack->stack->push_front(rec);
+						}
+					}
+					error= 0;
+				}
  	else if (!ignore ||
                  table->file->is_fatal_error(error, HA_CHECK_ALL))
 	{
@@ -904,6 +1020,7 @@ int mysql_update(THD *thd,
       error= 1;
       break;
     }
+    records_position++;
   }
   ANALYZE_STOP_TRACKING(&explain->command_tracker);
   table->auto_increment_field_not_null= FALSE;
