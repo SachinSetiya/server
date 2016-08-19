@@ -5287,6 +5287,8 @@ find_field_in_table(THD *thd, TABLE *table, const char *name, uint length,
 
   if (field_ptr && *field_ptr)
   {
+    if ((*field_ptr)->field_visibility == FULL_HIDDEN)
+       DBUG_RETURN((Field*) 0);
     *cached_field_index_ptr= field_ptr - table->field;
     field= *field_ptr;
   }
@@ -7351,6 +7353,10 @@ insert_fields(THD *thd, Name_resolution_context *context, const char *db_name,
 
     for (; !field_iterator.end_of_fields(); field_iterator.next())
     {
+      /* Field can be null here details in test case*/
+      if ((field= field_iterator.field()) &&
+               field->field_visibility != NOT_HIDDEN)
+        continue;
       Item *item;
 
       if (!(item= field_iterator.create_item(thd)))
@@ -7986,6 +7992,42 @@ fill_record(THD *thd, TABLE *table, Field **ptr, List<Item> &values,
     only one row.
   */
   table->auto_increment_field_not_null= FALSE;
+  Field **f;
+  List_iterator<Item> i_iter(values);
+  uint field_count= 0;
+  for (f= ptr; f && (field= *f); f++)
+    field_count++;
+  /*
+    This if is required in query like
+    suppose table
+      create table t1 (a int , b int hidden , c int , d int hidden );
+    and query is
+      create table t2 as select a,b,c,d from t1;
+    in this case field count will be equal to values.elements
+   */
+  if (field_count != values.elements)
+  {
+    Name_resolution_context *context= & thd->lex->select_lex.context;
+    for (f= ptr; f && (field= *f); f++)
+    {
+      if (field->field_visibility!=NOT_HIDDEN)
+      {
+        if (f == ptr)
+        {
+          values.push_front(new (thd->mem_root)
+                            Item_default_value(thd,context),thd->mem_root);
+          i_iter.rewind();
+          i_iter++;
+        }
+        else
+          i_iter.after(new (thd->mem_root) Item_default_value(thd,context));
+      }
+      else
+        i_iter++;
+    }
+    f= ptr;
+    i_iter.rewind();
+  }
   while ((field = *ptr++) && ! thd->is_error())
   {
     /* Ensure that all fields are from the same table */
@@ -8021,6 +8063,23 @@ fill_record(THD *thd, TABLE *table, Field **ptr, List<Item> &values,
                                               VCOL_UPDATE_FOR_WRITE))
     goto err;
   thd->abort_on_warning= abort_on_warning_saved;
+  /*
+     We need to remove extra added defaul value from
+     value list because consider query like
+     insert into t1 select * from t2;
+     it will only use only one value list and each time we
+     add new default it will increase size of value list.
+   */
+  if (field_count != values.elements)
+  {
+    for ( ; f && (field= *f) && i_iter++ ; f++)
+    {
+      if (field->field_visibility!=NOT_HIDDEN)
+      {
+        i_iter.remove();
+      }
+    }
+  }
   DBUG_RETURN(thd->is_error());
 
 err:

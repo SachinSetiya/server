@@ -89,6 +89,26 @@ static uchar *extra2_write(uchar *pos, enum extra2_frm_value_type type,
   return extra2_write(pos, type, reinterpret_cast<LEX_STRING *>(str));
 }
 
+static uchar *extra2_write_field_visibility_hash_info(uchar *pos,
+                   int number_of_fields,List_iterator<Create_field> * it)
+{
+  *pos++=EXTRA2_FIELD_FLAGS;
+  /*
+   always 2  first for field visibility
+   second for is this column represent long unique hash
+   */
+  size_t len = 2*number_of_fields;
+  pos= extra2_write_len(pos,len);
+  Create_field *cf;
+  while((cf=(*it)++))
+  {
+    *pos++=cf->field_visibility;
+    *pos++=cf->is_long_column_hash;
+  }
+  return pos;
+}
+
+
 /**
   Create a frm (table definition) file
 
@@ -121,6 +141,22 @@ LEX_CUSTRING build_frm_image(THD *thd, const char *table,
   uchar *frm_ptr, *pos;
   LEX_CUSTRING frm= {0,0};
   DBUG_ENTER("build_frm_image");
+  List_iterator<Create_field> it(create_fields);
+  Create_field *field;
+  bool is_hidden_fields_present= false;
+  /*
+    Loop througt the iterator to find whether we have any field whose
+    visibility_type != NOT_HIDDEN
+  */
+  while ((field=it++))
+  {
+    if (field->field_visibility != NOT_HIDDEN)
+    {
+      is_hidden_fields_present= true;
+      break;
+    }
+  }
+  it.rewind();
 
  /* If fixed row records, we need one bit to check for deleted rows */
   if (!(create_info->table_options & HA_OPTION_PACK_RECORD))
@@ -209,7 +245,9 @@ LEX_CUSTRING build_frm_image(THD *thd, const char *table,
 
   if (gis_extra2_len)
     extra2_size+= 1 + (gis_extra2_len > 255 ? 3 : 1) + gis_extra2_len;
-
+  if(is_hidden_fields_present)
+    extra2_size+=1 + (2*create_fields.elements > 255 ? 3 : 1) +
+        2*create_fields.elements;// first one for type(extra2_field_flags) next 1 or 3  for length
 
   key_buff_length= uint4korr(fileinfo+47);
 
@@ -265,7 +303,9 @@ LEX_CUSTRING build_frm_image(THD *thd, const char *table,
     pos+= gis_field_options_image(pos, create_fields);
   }
 #endif /*HAVE_SPATIAL*/
-
+  if (is_hidden_fields_present)
+    pos=extra2_write_field_visibility_hash_info(pos,create_fields.elements,&it);
+  it.rewind();
   int4store(pos, filepos); // end of the extra2 segment
   pos+= 4;
 
@@ -343,8 +383,7 @@ LEX_CUSTRING build_frm_image(THD *thd, const char *table,
       Restore all UCS2 intervals.
       HEX representation of them is not needed anymore.
     */
-    List_iterator<Create_field> it(create_fields);
-    Create_field *field;
+
     while ((field=it++))
     {
       if (field->save_interval)

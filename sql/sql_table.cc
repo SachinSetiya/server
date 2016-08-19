@@ -3186,6 +3186,177 @@ static void check_duplicate_key(THD *thd,
   }
 }
 
+/*
+  Add hidden level 3 hash field to table in case of long
+  unique column
+  Returns 0 on success
+  else 1
+*/
+
+int add_hash_field(THD * thd, Alter_info *alter_info, Key *current_key,
+                KEY *current_key_info, KEY *key_info, CHARSET_INFO *cs)
+{
+  int num= 1;
+  List_iterator<Key> key_iter(alter_info->key_list);
+  List_iterator<Key_part_spec> key_part_iter(current_key->columns);
+  List_iterator<Create_field> it(alter_info->create_list);
+  Create_field *dup_field, * sql_field;
+  Key_part_spec *temp_colms;
+
+  Create_field *cf= new (thd->mem_root) Create_field();
+  cf->flags|= UNSIGNED_FLAG;
+  cf->length= cf->char_length= HA_HASH_FIELD_LENGTH;
+  cf->charset= NULL;
+  cf->decimals= 0;
+  char *temp_name= (char *)thd->alloc(30);
+  strcpy(temp_name, HA_DB_ROW_HASH_STR);
+  char num_holder[10];    //10 is way more but i think it is ok
+  sprintf(num_holder, "%d",num);
+  strcat(temp_name, num_holder);
+  /*
+    Check for collusions
+   */
+  while ((dup_field= it++))
+  {
+    if (!my_strcasecmp(system_charset_info, temp_name, dup_field->field_name))
+    {
+      temp_name[12]= '\0'; //now temp_name='DB_ROW_HASH_'
+      num++;
+      sprintf(num_holder, "%d",num);
+      strcat(temp_name, num_holder);
+      it.rewind();
+    }
+  }
+  it.rewind();
+  cf->field_name= temp_name;
+  cf->sql_type= MYSQL_TYPE_LONGLONG;
+  /* hash column should be atmost hidden */
+  cf->field_visibility= FULL_HIDDEN;
+  cf->is_long_column_hash= true;
+  /* add the virtual colmn info */
+  Virtual_column_info *v= new (thd->mem_root) Virtual_column_info();
+  char * hash_exp= (char *)thd->alloc(1024);
+  char * key_name= (char *)thd->alloc(1024);
+  strcpy(hash_exp, HA_HASH_STR_HEAD);
+  temp_colms= key_part_iter++;
+  strcat(hash_exp, temp_colms->field_name.str);
+  strcpy(key_name, temp_colms->field_name.str);
+  strcat(hash_exp, "`");
+  while ((temp_colms= key_part_iter++))
+  {
+    while ((sql_field= it++) &&
+           my_strcasecmp(system_charset_info,
+              temp_colms->field_name.str, sql_field->field_name))
+    {}
+    it.rewind();
+    /*
+      There should be only one key for db_row_hash_* column
+      we need to give user a error when the accidently query
+      like
+
+      create table t1(abc blob unique, unique(db_row_hash_1));
+      alter table t2 add column abc blob unique,add unique key(db_row_hash_1);
+
+      for this we will iterate through the key_list and
+      find if and key_part has the same name as of temp_name
+     */
+    if (!sql_field || sql_field->is_long_column_hash)
+    {
+      my_error(ER_KEY_COLUMN_DOES_NOT_EXITS, MYF(0), temp_name);
+      return 1;
+    }
+    /*
+      This test for wrong query like
+      create table t1(a blob ,unique(a,a));
+    */
+    if (find_field_name_in_hash(hash_exp,
+                 temp_colms->field_name.str, strlen(hash_exp))!=-1)
+    {
+      my_error(ER_DUP_FIELDNAME, MYF(0), temp_colms->field_name.str);
+      return 1;
+    }
+    /* If any field can be null add flag */
+    if (!sql_field->flags & NOT_NULL_FLAG)
+      current_key_info->flags|= HA_NULL_PART_KEY;
+    strcat(hash_exp, (const char * )",");
+    strcat(key_name, "_");
+    strcat(hash_exp, "`");
+    strcat(hash_exp, temp_colms->field_name.str);
+    strcat(key_name, temp_colms->field_name.str);
+    strcat(hash_exp, "`");
+  }
+  strcat(hash_exp, (const char * )")");
+  v->expr_str.str= hash_exp;
+  v->expr_str.length= strlen(hash_exp);
+  v->expr_item= NULL;
+  v->set_stored_in_db_flag(true);
+  cf->vcol_info= v;
+  cf->charset= cs;
+  cf->create_length_to_internal_length();
+  cf->length= cf->char_length= cf->pack_length;
+  prepare_create_field(cf, NULL, 0);
+  if (!current_key_info->flags & HA_NULL_PART_KEY)
+  {
+    cf->pack_flag^= FIELDFLAG_MAYBE_NULL;
+    cf->flags^= NOT_NULL_FLAG;
+  }
+  alter_info->create_list.push_front(cf,thd->mem_root);
+  /* Update row offset because field is added in first position */
+  int offset=0;
+  it.rewind();
+  while ((dup_field= it++))
+  {
+    dup_field->offset= offset;
+    if (dup_field->stored_in_db())
+      offset+= dup_field->pack_length;
+  }
+  it.rewind();
+  while ((dup_field= it++))
+  {
+    if (!dup_field->stored_in_db())
+    {
+      dup_field->offset= offset;
+      offset+= dup_field->pack_length;
+    }
+  }
+  if(current_key->name.length==0)
+  {
+    current_key_info->name= key_name;
+    current_key_info->name_length= strlen(key_name);
+    key_name= make_unique_key_name(thd, key_name,
+          key_info, current_key_info);
+  }
+  else
+    current_key_info->name= current_key->name.str;
+  if (check_if_keyname_exists(current_key_info->name, key_info,
+                              current_key_info))
+  {
+    my_error(ER_DUP_KEYNAME, MYF(0), key_name);
+    return 1;
+  }
+  current_key->type= Key::MULTIPLE;
+  current_key_info->key_length= cf->pack_length; //length of mysql long column
+  current_key_info->user_defined_key_parts= 1;
+  current_key_info->flags= 0;
+  current_key_info->key_part->fieldnr= 0;
+  current_key_info->key_part->offset= 0;
+  current_key_info->key_part->key_type= cf->pack_flag;
+  current_key_info->key_part->length= cf->pack_length;
+  /* As key is added in front so update update keyinfo field ref and offset*/
+  KEY * t_key = key_info;
+  KEY_PART_INFO *t_key_part;
+  while (t_key != current_key_info)
+  {
+    t_key_part= t_key->key_part;
+    for (int i= 0; i < t_key->user_defined_key_parts; i++,t_key_part++)
+    {
+      t_key_part->fieldnr+= 1;
+      t_key_part->offset+= cf->pack_length;
+    }
+    t_key++;
+  }
+  return 0;
+}
 
 /*
   Preparation for table creation
@@ -3218,7 +3389,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
                            Alter_info *alter_info, uint *db_options,
                            handler *file, KEY **key_info_buffer,
                            uint *key_count, int create_table_mode)
-{
+{   
   const char	*key_name;
   Create_field	*sql_field,*dup_field;
   uint		field,null_fields,blob_columns,max_key_length;
@@ -3252,7 +3423,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     /* Set field charset. */
     save_cs= sql_field->charset= get_sql_field_charset(sql_field, create_info);
     if ((sql_field->flags & BINCMP_FLAG) &&
-	!(sql_field->charset= find_bin_collation(sql_field->charset)))
+  !(sql_field->charset= find_bin_collation(sql_field->charset)))
       DBUG_RETURN(TRUE);
 
     /*
@@ -3283,7 +3454,13 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
       /* Fix for prepare statement */
       thd->change_item_tree(&sql_field->default_value->expr_item, item);
     }
-
+    if (sql_field->field_visibility == USER_DEFINED_HIDDEN &&
+        sql_field->flags & NOT_NULL_FLAG &&
+        sql_field->flags & NO_DEFAULT_VALUE_FLAG)
+    {
+      my_error(ER_HIDDEN_NOT_NULL_WOUT_DEFAULT, MYF(0), sql_field->field_name);
+      DBUG_RETURN(TRUE);
+    }
     if (sql_field->sql_type == MYSQL_TYPE_SET ||
         sql_field->sql_type == MYSQL_TYPE_ENUM)
     {
@@ -3546,8 +3723,10 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     if (sql_field->stored_in_db())
       record_offset+= sql_field->pack_length;
   }
-  /* Update virtual fields' offset*/
+  /* Update virtual fields' offset and give error if
+     all field of table are hidden */
   it.rewind();
+  bool is_all_hidden= true;
   while ((sql_field=it++))
   {
     if (!sql_field->stored_in_db())
@@ -3555,6 +3734,13 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
       sql_field->offset= record_offset;
       record_offset+= sql_field->pack_length;
     }
+    if (sql_field->field_visibility == NOT_HIDDEN)
+      is_all_hidden= false;
+  }
+  if (is_all_hidden)
+  { //todo correct add error
+    my_error(ER_TABLE_MUST_HAVE_COLUMNS, MYF(0));
+    DBUG_RETURN(TRUE);
   }
   if (auto_increment > 1)
   {
@@ -3815,8 +4001,8 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 			   column->field_name.str,
 			   sql_field->field_name))
 	field++;
-      if (!sql_field)
-      {
+           if (!sql_field)
+           {
 	my_error(ER_KEY_COLUMN_DOES_NOT_EXITS, MYF(0), column->field_name.str);
 	DBUG_RETURN(TRUE);
       }
@@ -3841,8 +4027,8 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	    sql_field->charset->mbminlen > 1 || // ucs2 doesn't work yet
 	    (ft_key_charset && sql_field->charset != ft_key_charset))
 	{
-	    my_error(ER_BAD_FT_COLUMN, MYF(0), column->field_name.str);
-	    DBUG_RETURN(-1);
+            my_error(ER_BAD_FT_COLUMN, MYF(0), column->field_name.str);
+            DBUG_RETURN(-1);
 	}
 	ft_key_charset=sql_field->charset;
 	/*
@@ -3884,10 +4070,24 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
           if (f_is_geom(sql_field->pack_flag) && sql_field->geom_type ==
               Field::GEOM_POINT)
             column->length= MAX_LEN_GEOM_POINT_FIELD;
-	  if (!column->length)
-	  {
-	    my_error(ER_BLOB_KEY_WITHOUT_LENGTH, MYF(0), column->field_name.str);
-	    DBUG_RETURN(TRUE);
+    if (!column->length)
+    {
+      if (key->type == Key::PRIMARY)
+      { //todo change error message
+        my_error(ER_BLOB_KEY_WITHOUT_LENGTH, MYF(0), column->field_name.str);
+        DBUG_RETURN(TRUE);
+      }
+      if (!add_hash_field(thd, alter_info, key, key_info,
+                          *key_info_buffer, create_info->default_table_charset))
+      {
+        key_part_info= key_info->key_part;
+        key_part_info++;
+        null_fields++;
+        key_length= HA_HASH_KEY_LENGTH_WITHOUT_NULL;
+        break;
+      }
+      else
+        DBUG_RETURN(TRUE);
 	  }
 	}
 #ifdef HAVE_SPATIAL
@@ -3974,9 +4174,9 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	    }
 	    else
 	    {
-	      my_error(ER_TOO_LONG_KEY, MYF(0), key_part_length);
-	      DBUG_RETURN(TRUE);
-	    }
+				my_error(ER_TOO_LONG_KEY, MYF(0), key_part_length);
+				DBUG_RETURN(TRUE);
+			}
 	  }
 	}
         // Catch invalid use of partial keys 
@@ -4021,8 +4221,23 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	}
 	else
 	{
-	  my_error(ER_TOO_LONG_KEY, MYF(0), key_part_length);
-	  DBUG_RETURN(TRUE);
+		if(key->type != Key::UNIQUE)
+		{
+			my_error(ER_TOO_LONG_KEY, MYF(0), key_part_length);
+			DBUG_RETURN(TRUE);
+		}
+		//todo we does not respect length given by user in calculating hash
+		if(!add_hash_field(thd, alter_info, key, key_info,
+											 *key_info_buffer, create_info->default_table_charset))
+		{
+			key_part_info= key_info->key_part;
+			key_part_info++;
+			null_fields++;
+			key_length= HA_HASH_KEY_LENGTH_WITHOUT_NULL;
+			break;
+		}
+		else
+			DBUG_RETURN(TRUE);
 	}
       }
       key_part_info->length= (uint16) key_part_length;
@@ -7502,6 +7717,8 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   */
   for (f_ptr=table->field ; (field= *f_ptr) ; f_ptr++)
   {
+    if (field->field_visibility == FULL_HIDDEN)
+      continue;
     Alter_drop *drop;
     if (field->type() == MYSQL_TYPE_VARCHAR)
       create_info->varchar= TRUE;
@@ -7510,16 +7727,16 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     while ((drop=drop_it++))
     {
       if (drop->type == Alter_drop::COLUMN &&
-	  !my_strcasecmp(system_charset_info,field->field_name, drop->name))
+    !my_strcasecmp(system_charset_info,field->field_name, drop->name))
       {
-	/* Reset auto_increment value if it was dropped */
-	if (MTYP_TYPENR(field->unireg_check) == Field::NEXT_NUMBER &&
-	    !(used_fields & HA_CREATE_USED_AUTO))
-	{
-	  create_info->auto_increment_value=0;
-	  create_info->used_fields|=HA_CREATE_USED_AUTO;
-	}
-	break;
+  /* Reset auto_increment value if it was dropped */
+  if (MTYP_TYPENR(field->unireg_check) == Field::NEXT_NUMBER &&
+      !(used_fields & HA_CREATE_USED_AUTO))
+  {
+    create_info->auto_increment_value=0;
+    create_info->used_fields|=HA_CREATE_USED_AUTO;
+  }
+  break;
       }
     }
     if (drop)
@@ -7534,11 +7751,11 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     while ((def=def_it++))
     {
       if (def->change &&
-	  !my_strcasecmp(system_charset_info,field->field_name, def->change))
-	break;
+    !my_strcasecmp(system_charset_info,field->field_name, def->change))
+  break;
     }
     if (def)
-    {						// Field is changed
+    {           // Field is changed
       def->field=field;
       /*
         Add column being updated to the list of new columns.
@@ -7560,7 +7777,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
           in this list and process modified columns with AFTER clause or
           add new columns.
         */
-	def_it.remove();
+  def_it.remove();
       }
     }
     else
@@ -7571,25 +7788,25 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       */
       def= new (thd->mem_root) Create_field(thd, field, field);
       new_create_list.push_back(def, thd->mem_root);
-      alter_it.rewind();			// Change default if ALTER
+      alter_it.rewind();      // Change default if ALTER
       Alter_column *alter;
       while ((alter=alter_it++))
       {
-	if (!my_strcasecmp(system_charset_info,field->field_name, alter->name))
-	  break;
+  if (!my_strcasecmp(system_charset_info,field->field_name, alter->name))
+    break;
       }
       if (alter)
       {
-	if ((def->default_value= alter->default_value))
+  if ((def->default_value= alter->default_value))
           def->flags&= ~NO_DEFAULT_VALUE_FLAG;
         else
           def->flags|= NO_DEFAULT_VALUE_FLAG;
-	alter_it.remove();
+  alter_it.remove();
       }
     }
   }
   def_it.rewind();
-  while ((def=def_it++))			// Add new columns
+  while ((def=def_it++))      // Add new columns
   {
     if (def->change && ! def->field)
     {
@@ -7658,7 +7875,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
           my_error(ER_BAD_FIELD_ERROR, MYF(0), def->after, table->s->table_name.str);
           goto err;
         }
-        find_it.after(def);			// Put column after this
+        find_it.after(def);     // Put column after this
       }
     }
   }
@@ -7680,7 +7897,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     Collect all keys which isn't in drop list. Add only those
     for which some fields exists.
   */
- 
+
   for (uint i=0 ; i < table->s->keys ; i++,key_info++)
   {
     char *key_name= key_info->name;
@@ -7689,8 +7906,8 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     while ((drop=drop_it++))
     {
       if (drop->type == Alter_drop::KEY &&
-	  !my_strcasecmp(system_charset_info,key_name, drop->name))
-	break;
+    !my_strcasecmp(system_charset_info,key_name, drop->name))
+  break;
     }
     if (drop)
     {
@@ -7698,17 +7915,19 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       {
         (void) delete_statistics_for_index(thd, table, key_info, FALSE);
         if (i == table->s->primary_key)
-	{
+  {
           KEY *tab_key_info= table->key_info;
-	  for (uint j=0; j < table->s->keys; j++, tab_key_info++)
-	  {
+    for (uint j=0; j < table->s->keys; j++, tab_key_info++)
+    {
             if (tab_key_info->user_defined_key_parts !=
                 tab_key_info->ext_key_parts)
-	      (void) delete_statistics_for_index(thd, table, tab_key_info,
+        (void) delete_statistics_for_index(thd, table, tab_key_info,
                                                  TRUE);
-	  }
-	}
-      }  
+    }
+  }
+        if (key_info->flags & HA_UNIQUE_HASH)
+          alter_info->flags|= Alter_info::ALTER_DROP_COLUMN;
+      }
       drop_it.remove();
       continue;
     }
@@ -7716,10 +7935,30 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     KEY_PART_INFO *key_part= key_info->key_part;
     key_parts.empty();
     bool delete_index_stat= FALSE;
-    for (uint j=0 ; j < key_info->user_defined_key_parts ; j++,key_part++)
+    uint num_of_keyparts= key_info->user_defined_key_parts;
+    if (key_info->flags & HA_UNIQUE_HASH)
+    {
+      /* here we need to add keyparts as specified in hash_str */
+      LEX_STRING *ls= &key_info->key_part->field->vcol_info->expr_str;
+      num_of_keyparts= fields_in_hash_str(ls);
+      //should i free this ?
+      KEY_PART_INFO* k_parts= (KEY_PART_INFO*) thd->calloc(sizeof
+                                   (KEY_PART_INFO)*num_of_keyparts);
+      key_part= k_parts;
+      for (uint j= 0; j < num_of_keyparts; j++, k_parts++)
+      {
+        //we only need field length and type
+        k_parts->field= field_ptr_in_hash_str(ls, table, j);
+        k_parts->length= 0;
+        k_parts->type= k_parts->field->key_type();
+      }
+      alter_info->flags |= Alter_info::ALTER_DROP_COLUMN;
+      alter_info->flags |= Alter_info::ALTER_ADD_COLUMN;
+    }
+    for (uint j=0 ; j < num_of_keyparts ; j++,key_part++)
     {
       if (!key_part->field)
-	continue;				// Wrong field (from UNIREG)
+  continue;       // Wrong field (from UNIREG)
       const char *key_part_name=key_part->field->field_name;
       Create_field *cfield;
       uint key_part_length;
@@ -7727,25 +7966,25 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       field_it.rewind();
       while ((cfield=field_it++))
       {
-	if (cfield->change)
-	{
-	  if (!my_strcasecmp(system_charset_info, key_part_name,
-			     cfield->change))
-	    break;
-	}
-	else if (!my_strcasecmp(system_charset_info,
-				key_part_name, cfield->field_name))
-	  break;
+  if (cfield->change)
+  {
+    if (!my_strcasecmp(system_charset_info, key_part_name,
+           cfield->change))
+      break;
+  }
+  else if (!my_strcasecmp(system_charset_info,
+        key_part_name, cfield->field_name))
+    break;
       }
       if (!cfield)
       {
         if (table->s->primary_key == i)
           modified_primary_key= TRUE;
         delete_index_stat= TRUE;
-	continue;				// Field is removed
+  continue;       // Field is removed
       }
       key_part_length= key_part->length;
-      if (cfield->field)			// Not new field
+      if (cfield->field)      // Not new field
       {
         /*
           If the field can't have only a part used in a key according to its
@@ -7758,7 +7997,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
 
           BLOBs may have cfield->length == 0, which is why we test it before
           checking whether cfield->length < key_part_length (in chars).
-          
+
           In case of TEXTs we check the data type maximum length *in bytes*
           to key part length measured *in characters* (i.e. key_part_length
           devided to mbmaxlen). This is because it's OK to have:
@@ -7774,21 +8013,21 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
             (cfield->field->field_length == key_part_length &&
              !f_is_blob(key_part->key_type)) ||
             (cfield->length && (((cfield->sql_type >= MYSQL_TYPE_TINY_BLOB &&
-                                  cfield->sql_type <= MYSQL_TYPE_BLOB) ? 
+                                  cfield->sql_type <= MYSQL_TYPE_BLOB) ?
                                 blob_length_by_type(cfield->sql_type) :
                                 cfield->length) <
-	     key_part_length / key_part->field->charset()->mbmaxlen)))
-	  key_part_length= 0;			// Use whole field
+       key_part_length / key_part->field->charset()->mbmaxlen)))
+    key_part_length= 0;     // Use whole field
       }
       key_part_length /= key_part->field->charset()->mbmaxlen;
       key_parts.push_back(new Key_part_spec(cfield->field_name,
                                             strlen(cfield->field_name),
-					    key_part_length),
+              key_part_length),
                           thd->mem_root);
     }
     if (table->s->tmp_table == NO_TMP_TABLE)
     {
-      if (delete_index_stat) 
+      if (delete_index_stat)
         (void) delete_statistics_for_index(thd, table, key_info, FALSE);
       else if (modified_primary_key &&
                key_info->user_defined_key_parts != key_info->ext_key_parts)
@@ -7818,7 +8057,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
 
       if (key_info->flags & HA_SPATIAL)
         key_type= Key::SPATIAL;
-      else if (key_info->flags & HA_NOSAME)
+      else if (key_info->flags & HA_NOSAME || key_info->flags & HA_UNIQUE_HASH)
       {
         if (! my_strcasecmp(system_charset_info, key_name, primary_key_name))
           key_type= Key::PRIMARY;
@@ -7839,16 +8078,19 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   }
   {
     Key *key;
-    while ((key=key_it++))			// Add new keys
+    while ((key=key_it++))      // Add new keys
     {
       if (key->type == Key::FOREIGN_KEY &&
           ((Foreign_key *)key)->validate(new_create_list))
         goto err;
+      /* Key can be on blob columns so */
+      if (key->type == Key::UNIQUE)
+        alter_info->flags |= Alter_info::ALTER_ADD_COLUMN;
       new_key_list.push_back(key, thd->mem_root);
       if (key->name.str &&
-	  !my_strcasecmp(system_charset_info, key->name.str, primary_key_name))
+    !my_strcasecmp(system_charset_info, key->name.str, primary_key_name))
       {
-	my_error(ER_WRONG_NAME_FOR_INDEX, MYF(0), key->name.str);
+  my_error(ER_WRONG_NAME_FOR_INDEX, MYF(0), key->name.str);
         goto err;
       }
     }
@@ -7922,7 +8164,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   if (create_info->table_options &
       (HA_OPTION_DELAY_KEY_WRITE | HA_OPTION_NO_DELAY_KEY_WRITE))
     db_create_options&= ~(HA_OPTION_DELAY_KEY_WRITE |
-			  HA_OPTION_NO_DELAY_KEY_WRITE);
+        HA_OPTION_NO_DELAY_KEY_WRITE);
   create_info->table_options|= db_create_options;
 
   if (table->s->tmp_table)
@@ -7935,7 +8177,6 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
 err:
   DBUG_RETURN(rc);
 }
-
 
 /**
   Get Create_field object for newly created table by its name

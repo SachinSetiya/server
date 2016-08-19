@@ -330,7 +330,28 @@ enum enum_vcol_update_mode
   VCOL_UPDATE_ALL
 };
 
+/* Field visibility enums */
 
+enum  field_visible_type{
+	NOT_HIDDEN=0,
+	USER_DEFINED_HIDDEN,
+	MEDIUM_HIDDEN,
+	FULL_HIDDEN
+};
+
+int rem_field_from_hash_col_str(LEX_STRING *hash_lex, const char *field_name);
+
+int change_field_from_hash_col_str(LEX_STRING *hash_lex,
+																	 const char *old_name, char *new_name);
+
+int find_field_name_in_hash(char * hash_str, const char *field_name,
+														int hash_str_length);
+
+int find_field_index_in_hash(LEX_STRING * hash_lex, const char * field_name);
+
+int fields_in_hash_str(LEX_STRING *hash_lex);
+
+Field * field_ptr_in_hash_str(LEX_STRING * hash_str, TABLE *table, int index);
 /**
   Category of table found in the table share.
 */
@@ -1031,6 +1052,19 @@ public:
   Field **field;			/* Pointer to fields */
 
   uchar *record[2];			/* Pointer to records */
+  uchar *check_unique_buf;  /* Pointer to record with same hash */
+  handler *update_handler;  /* Handler used in case of update */
+  /*
+     In the case of write row for long unique we are unable of find
+     Whick key is voilated because we in case of duplicate we never reach
+     handler write_row function so print_error will always print that
+     key 0 is voilated we store which key is voilated in this variable
+     by default this should be initialized to -1
+   */
+  int dupp_key;
+  /* If dupp != -1 then this string
+     store message which should be printed */
+  char *err_message;
   uchar *write_row_record;		/* Used as optimisation in
 					   THD::write_row */
   uchar *insert_values;                  /* used by INSERT ... UPDATE */

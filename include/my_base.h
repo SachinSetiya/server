@@ -241,6 +241,19 @@ enum ha_base_keytype {
   HA_KEYTYPE_BIT=19
 };
 
+/* Add some constant related to unique long hash column like length hash string etc*/
+
+#define HA_HASH_KEY_LENGTH_WITHOUT_NULL 8
+#define HA_HASH_FIELD_LENGTH            8
+#define HA_HASH_KEY_LENGTH_WITH_NULL    9
+#define HA_HASH_STR_HEAD                "hash(`" //used in mysql_prepare_create_table
+#define HA_HASH_STR_HEAD_LEN            strlen(HA_HASH_STR_HEAD_LEN)
+#define HA_HASH_STR                     "hash"
+#define HA_HASH_STR_LEN                 strlen(HA_HASH_STR)
+#define HA_HASH_STR_INDEX               "HASH_INDEX"
+#define HA_HASH_STR_INDEX_LEN           strlen(HA_HASH_STR_INDEX)
+#define HA_DB_ROW_HASH_STR              "DB_ROW_HASH_"
+
 #define HA_MAX_KEYTYPE	31		/* Must be log2-1 */
 
 /*
@@ -257,7 +270,11 @@ enum ha_base_keytype {
 #define HA_SPATIAL		1024    /* For spatial search */
 #define HA_NULL_ARE_EQUAL	2048	/* NULL in key are cmp as equal */
 #define HA_GENERATED_KEY	8192	/* Automaticly generated key */
-
+/*
+   Some more flags for keys  these are not stored in
+   frm it is calculated on the fly in init_from_binary_frm_image
+*/
+#define HA_UNIQUE_HASH            65536
         /* The combination of the above can be used for key type comparison. */
 #define HA_KEYFLAG_MASK (HA_NOSAME | HA_PACK_KEY | HA_AUTO_KEY | \
                          HA_BINARY_PACK_KEY | HA_FULLTEXT | HA_UNIQUE_CHECK | \

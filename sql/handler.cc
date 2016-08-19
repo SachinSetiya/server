@@ -3278,6 +3278,12 @@ void handler::ha_release_auto_increment()
 void print_keydup_error(TABLE *table, KEY *key, const char *msg, myf errflag)
 {
   /* Write the duplicated key in the error message */
+  if (table->dupp_key != -1 && table->err_message)
+  {
+    my_printf_error(ER_DUP_ENTRY, msg, errflag,
+                    table->err_message, key->name);
+    return;
+  }
   char key_buff[MAX_KEY_LENGTH];
   String str(key_buff,sizeof(key_buff),system_charset_info);
 
@@ -3791,6 +3797,8 @@ uint handler::get_dup_key(int error)
               m_lock_type != F_UNLCK);
   DBUG_ENTER("handler::get_dup_key");
   table->file->errkey  = (uint) -1;
+  if (table->dupp_key != -1)
+    DBUG_RETURN(table->dupp_key);
   if (error == HA_ERR_FOUND_DUPP_KEY || error == HA_ERR_FOREIGN_DUPLICATE_KEY ||
       error == HA_ERR_FOUND_DUPP_UNIQUE || error == HA_ERR_NULL_IN_SPATIAL ||
       error == HA_ERR_DROP_INDEX_FK)
@@ -5875,6 +5883,154 @@ int handler::ha_reset()
   DBUG_RETURN(reset());
 }
 
+/** @brief
+    check whether inserted/updated records breaks the
+    unique constraint on long columns.
+    In the case of update we just need to check the specic key
+    reason for that is consider case
+    create table t1(a blob , b blob , x blob , y blob ,unique(a,b)
+                                                    ,unique(c,d))
+    and update statement like this
+    update t1 set a=23+a; in this case if we try to scan for
+    whole keys in table then index scan on c_d will return 0
+    because data is same so in the case of update we take
+    key as a parameter in normal insert key should be -1
+   @returns 0 if no duplicate else returns error
+  */
+int check_duplicate_long_entries(TABLE *table, handler *h, uchar *new_rec,
+                                  int key)
+{
+  Field *hash_field;
+  int result;
+  table->dupp_key= -1;
+  for (uint i= 0; i < table->s->keys; i++)
+  {
+    if (key != -1)
+      i= key;
+    if (table->key_info[i].flags & HA_UNIQUE_HASH)
+    {
+      hash_field= table->key_info[i].key_part->field;
+      DBUG_ASSERT(table->key_info[i].key_length == HA_HASH_KEY_LENGTH_WITH_NULL);
+      uchar ptr[HA_HASH_KEY_LENGTH_WITH_NULL];
+
+      if (hash_field->is_null())
+        continue;
+
+      key_copy(ptr, new_rec, &table->key_info[i],
+                      table->key_info[i].key_length, false);
+
+      if (!table->check_unique_buf)
+        table->check_unique_buf= (uchar *)alloc_root(&table->mem_root,
+                                        table->s->reclength*sizeof(uchar));
+
+      result= h->ha_index_read_idx_map(table->check_unique_buf,
+                                  i, ptr, HA_WHOLE_KEY, HA_READ_KEY_EXACT);
+      if (!result)
+      {
+        Item_func_or_sum * temp= static_cast<Item_func_or_sum *>(hash_field->
+                                                        vcol_info->expr_item);
+        Item_args * t_item= static_cast<Item_args *>(temp);
+        uint arg_count= t_item->argument_count();
+        Item ** arguments= t_item->arguments();
+        int diff= table->check_unique_buf-new_rec;
+        Field * t_field;
+
+        for (uint j=0; j < arg_count; j++)
+        {
+          t_field= static_cast<Item_field *>(arguments[j])->field;
+          if(t_field->cmp_binary_offset(diff))
+            continue;
+        }
+        table->dupp_key= i;
+        if (!table->err_message)
+        {
+          table->err_message= (char *) alloc_root(&table->mem_root,
+                                                 MAX_KEY_LENGTH);
+        }
+        StringBuffer<MAX_KEY_LENGTH> str;
+        str.length(0);
+        for(uint i= 0; i < arg_count; i++)
+        {
+          t_field= ((Item_field *)arguments[i])->field;
+          if (str.length())
+            str.append('-');
+          field_unpack(&str, t_field, new_rec, 5,//since blob can be to long
+                       false);
+        }
+        memcpy(table->err_message,str.ptr(),str.length());
+        return HA_ERR_FOUND_DUPP_KEY;
+      }
+    }
+    if (key != -1)
+      break;
+  }
+  return 0;
+}
+
+/** @brief
+    check whether updated records breaks the
+    unique constraint on long columns.
+   @returns 0 if no duplicate else returns error
+  */
+int check_duplicate_long_entries_update(TABLE *table, handler *h, uchar *new_rec)
+{
+  Field **f, *field;
+  LEX_STRING *ls;
+  int error= 0;
+  bool is_update_handler_null= false;
+  /*
+     Here we are comparing whether new record and old record are same
+     with respect to fields in hash_str
+   */
+  long reclength= table->record[1]-table->record[0];
+  for (uint i= 0; i < table->s->keys; i++)
+  {
+    if (table->key_info[i].flags & HA_UNIQUE_HASH)
+    {
+      /*
+         Currently mysql_update is pacthed so that it will automatically set the
+         Update handler and then free it but ha_update_row is used in many function (
+         like in case of reinsert) Instead of patching them all here we check is
+         update_handler is null then set it  And then set it null again
+       */
+      if (!table->update_handler)
+      {
+        table->update_handler= table->file->clone(table->s->normalized_path.str,
+                                                          &table->mem_root);
+        table->update_handler->ha_external_lock(current_thd, F_RDLCK);
+        is_update_handler_null= true;
+      }
+      ls= &table->key_info[i].key_part->field->vcol_info->expr_str;
+      for (f= table->field; f && (field= *f); f++)
+      {
+        if ( find_field_index_in_hash(ls, field->field_name) != -1)
+        {
+          /* Compare fields if they are different then check for duplicates*/
+          if(field->cmp_binary_offset(reclength))
+          {
+            if((error= check_duplicate_long_entries(table, table->update_handler,
+                                                   new_rec, i)))
+              goto exit;
+            /*
+              break beacuse check_duplicate_long_entries will
+              take care of remaning fields
+             */
+            break;
+          }
+        }
+      }
+    }
+  }
+  exit:
+  if (is_update_handler_null)
+  {
+    table->update_handler->ha_external_lock(current_thd, F_UNLCK);
+    table->update_handler->ha_close();
+    delete table->update_handler;
+    table->update_handler= NULL;
+  }
+  return error;
+}
 
 int handler::ha_write_row(uchar *buf)
 {
@@ -5889,6 +6045,8 @@ int handler::ha_write_row(uchar *buf)
   mark_trx_read_write();
   increment_statistics(&SSV::ha_write_count);
 
+  if ((error= check_duplicate_long_entries(table, table->file, buf, -1)))
+    DBUG_RETURN(error);
   TABLE_IO_WAIT(tracker, m_psi, PSI_TABLE_WRITE_ROW, MAX_KEY, 0,
                       { error= write_row(buf); })
 
@@ -5921,6 +6079,8 @@ int handler::ha_update_row(const uchar *old_data, uchar *new_data)
   mark_trx_read_write();
   increment_statistics(&SSV::ha_update_count);
 
+  if ((error= check_duplicate_long_entries_update(table, table->file, new_data)))
+    return error;
   TABLE_IO_WAIT(tracker, m_psi, PSI_TABLE_UPDATE_ROW, active_index, 0,
                       { error= update_row(old_data, new_data);})
 

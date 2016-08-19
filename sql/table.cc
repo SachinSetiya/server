@@ -685,7 +685,7 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
                              uint keys, KEY *keyinfo,
                              uint new_frm_ver, uint &ext_key_parts,
                              TABLE_SHARE *share, uint len,
-                             KEY *first_keyinfo, char* &keynames)
+                             KEY *first_keyinfo, char* &keynames,const uchar *key_ex_flags)
 {
   uint i, j, n_length;
   KEY_PART_INFO *key_part= NULL;
@@ -738,7 +738,6 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
       keyinfo->algorithm= HA_KEY_ALG_UNDEF;
       strpos+=4;
     }
-
     if (i == 0)
     {
       ext_key_parts+= (share->use_ext_keys ? first_keyinfo->user_defined_key_parts*(keys-1) : 0); 
@@ -762,7 +761,6 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
       if (new_frm_ver >= 3)
         keyinfo->block_size= first_keyinfo->block_size;
     }
-
     keyinfo->key_part=	 key_part;
     keyinfo->rec_per_key= rec_per_key;
     for (j=keyinfo->user_defined_key_parts ; j-- ; key_part++)
@@ -801,7 +799,8 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
     keyinfo->ext_key_parts= keyinfo->user_defined_key_parts;
     keyinfo->ext_key_flags= keyinfo->flags;
     keyinfo->ext_key_part_map= 0;
-    if (share->use_ext_keys && i && !(keyinfo->flags & HA_NOSAME))
+    if (share->use_ext_keys && i && !(keyinfo->flags & HA_NOSAME)
+  )
     {
       for (j= 0; 
            j < first_key_parts && keyinfo->ext_key_parts < MAX_REF_PARTS;
@@ -989,6 +988,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   const uchar *frm_image_end = frm_image + frm_length;
   uchar *record, *null_flags, *null_pos, *mysql57_vcol_null_pos;
   const uchar *disk_buff, *strpos;
+  const uchar * field_properties=NULL,*key_ex_flags=NULL;
   ulong pos, record_offset; 
   ulong rec_buff_length;
   handler *handler_file= 0;
@@ -1056,7 +1056,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         if (length < 256)
           goto err;
       }
-      if (extra2 + length > e2end)
+      if ( extra2 + length > e2end)
         goto err;
       switch (type) {
       case EXTRA2_TABLEDEF_VERSION:
@@ -1101,6 +1101,9 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         }
 #endif /*HAVE_SPATIAL*/
         break;
+      case EXTRA2_FIELD_FLAGS:
+         field_properties = extra2;
+        break;
       default:
         /* abort frm parsing if it's an unknown but important extra2 value */
         if (type >= EXTRA2_ENGINE_IMPORTANT)
@@ -1111,7 +1114,6 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     if (extra2 != e2end)
       goto err;
   }
-
   if (frm_length < FRM_HEADER_SIZE + len ||
       !(pos= uint4korr(frm_image + FRM_HEADER_SIZE + len)))
     goto err;
@@ -1297,7 +1299,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
     if (create_key_infos(disk_buff + 6, frm_image_end, keys, keyinfo,
                          new_frm_ver, ext_key_parts,
-                         share, len, &first_keyinfo, keynames))
+                         share, len, &first_keyinfo, keynames,key_ex_flags))
       goto err;
 
     if (next_chunk + 5 < buff_end)
@@ -1390,7 +1392,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   {
     if (create_key_infos(disk_buff + 6, frm_image_end, keys, keyinfo,
                          new_frm_ver, ext_key_parts,
-                         share, len, &first_keyinfo, keynames))
+                         share, len, &first_keyinfo, keynames,key_ex_flags))
       goto err;
   }
 
@@ -1795,6 +1797,16 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     reg_field->field_index= i;
     reg_field->comment=comment;
     reg_field->vcol_info= vcol_info;
+    if(field_properties!=NULL)
+    {
+      reg_field->field_visibility=static_cast<field_visible_type>(*field_properties++);
+      reg_field->is_long_column_hash=static_cast<bool>(*field_properties++);
+    }
+    /*
+       We will add status variable only when we find a user defined hidden column
+    */
+    if (reg_field->field_visibility == USER_DEFINED_HIDDEN)
+      status_var_increment(thd->status_var.feature_hidden_column);
     if (field_type == MYSQL_TYPE_BIT && !f_bit_as_char(pack_flag))
     {
       null_bits_are_used= 1;
@@ -2004,13 +2016,27 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
         field= key_part->field= share->field[key_part->fieldnr-1];
         key_part->type= field->key_type();
+        /*
+          Add HA_UNIQUE_HASH flag if keyinfo has only one field
+          and field has is_long_column_hash flag on
+        */
+        if (keyinfo->user_defined_key_parts == 1 &&
+             field->is_long_column_hash)
+        {
+          keyinfo->flags|= HA_UNIQUE_HASH;
+          keyinfo->ext_key_flags|= HA_UNIQUE_HASH;
+        }
         if (field->null_ptr)
         {
           key_part->null_offset=(uint) ((uchar*) field->null_ptr -
                                         share->default_values);
           key_part->null_bit= field->null_bit;
           key_part->store_length+=HA_KEY_NULL_LENGTH;
-          keyinfo->flags|=HA_NULL_PART_KEY;
+          if (keyinfo->flags & HA_UNIQUE_HASH &&
+              !(keyinfo->flags & HA_NULL_PART_KEY))
+          {}
+          else
+            keyinfo->flags|=HA_NULL_PART_KEY;
           keyinfo->key_length+= HA_KEY_NULL_LENGTH;
         }
         if (field->type() == MYSQL_TYPE_BLOB ||
@@ -2027,7 +2053,6 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         }
         if (field->type() == MYSQL_TYPE_BIT)
           key_part->key_part_flag|= HA_BIT_PART;
-
         if (i == 0 && key != primary_key)
           field->flags |= (((keyinfo->flags & HA_NOSAME) &&
                            (keyinfo->user_defined_key_parts == 1)) ?
@@ -2046,6 +2071,12 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
           }
           if (handler_file->index_flags(key, i, 1) & HA_READ_ORDER)
             field->part_of_sortkey.set_bit(key);
+        }
+        if (keyinfo->flags & HA_UNIQUE_HASH)
+        {
+//          LEX_STRING *ls =  &keyinfo->key_part->field->vcol_info->expr_str;
+//          if (find_field_index_in_hash(ls,field->field_name))
+//            field->hash_key_map.set_bit(key);
         }
         if (!(key_part->key_part_flag & HA_REVERSE_SORT) &&
             usable_parts == i)
@@ -2124,6 +2155,11 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
       if ((keyinfo->flags & HA_NOSAME) ||
           (ha_option & HA_ANY_INDEX_MAY_BE_UNIQUE))
         set_if_bigger(share->max_unique_length,keyinfo->key_length);
+      if (keyinfo->flags & HA_UNIQUE_HASH)
+      {
+        keyinfo->ext_key_parts= 1;
+        keyinfo->ext_key_part_map= 0;
+      }
     }
     if (primary_key < MAX_KEY &&
 	(share->keys_in_use.is_set(primary_key)))
@@ -2812,7 +2848,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
   uint records, i, bitmap_size, bitmap_count;
   bool error_reported= FALSE;
   uchar *record, *bitmaps;
-  Field **field_ptr;
+  Field **field_ptr, *field;
+  KEY *key_info;
   uint8 save_context_analysis_only= thd->lex->context_analysis_only;
   DBUG_ENTER("open_table_from_share");
   DBUG_PRINT("enter",("name: '%s.%s'  form: 0x%lx", share->db.str,
@@ -3062,6 +3099,22 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
              field->has_update_default_function()))
           *(dfield_ptr++)= *field_ptr;
 
+    }
+    /* Set field hash map*/
+    key_info= outparam->key_info;
+    for ( int i=0; i < outparam->s->keys;i++,key_info++)
+    {
+      if (key_info->flags & HA_UNIQUE_HASH)
+      {
+        LEX_STRING *ls= &key_info->key_part->field->vcol_info->expr_str;
+        int num_of_fields= fields_in_hash_str(ls);
+        for (int j= 0; j < num_of_fields; j++)
+        {
+          field= field_ptr_in_hash_str(ls, outparam, j);
+          field->hash_key_map.init();
+          field->hash_key_map.set_bit(i);
+        }
+      }
     }
     *vfield_ptr= 0;                            // End marker
     *dfield_ptr= 0;                            // End marker
@@ -4392,6 +4445,10 @@ void TABLE::init(THD *thd, TABLE_LIST *tl)
   created= TRUE;
   cond_selectivity= 1.0;
   cond_selectivity_sampling_explain= NULL;
+  update_handler= NULL;
+  dupp_key= -1;
+  err_message= NULL;
+  check_unique_buf= NULL;
 #ifdef HAVE_REPLICATION
   /* used in RBR Triggers */
   master_had_triggers= 0;
@@ -7807,4 +7864,194 @@ double KEY::actual_rec_per_key(uint i)
     return 0;
   return (is_statistics_from_stat_tables ?
           read_stats->get_avg_frequency(i) : (double) rec_per_key[i]);
+}
+
+/*
+   find out that whether field name exists in hash_str
+   return index of  hash_str  if found other wise returns
+   -1
+*/
+int find_field_name_in_hash(char * hash_str, const  char * field_name,
+                            int hash_str_length)
+{
+
+  int j= 0, i= 0;
+  for (i= 0; i < hash_str_length; i++)
+  {
+    while (*(hash_str+i) == *(field_name+j))
+    {
+      i++;
+      j++;
+      if(*(field_name+j)=='\0' &&*(hash_str+i)=='`')
+        goto done;
+    }
+    j=0;
+  }
+  return -1;
+  done:
+  return i;
+}
+
+/*
+   find out the field positoin in hash_str()
+   position starts from 0
+   else return -1;
+*/
+int find_field_index_in_hash(LEX_STRING *hash_lex, const char * field_name)
+{
+  char *hash_str= hash_lex->str;
+  int hash_str_length= hash_lex->length;
+  int field_name_position= find_field_name_in_hash(hash_str, field_name, hash_str_length);
+  if (field_name_position == -1)
+    return -1;
+  int index= 0;
+  for (int i= 0; i < field_name_position; i++)
+  {
+    if (hash_str[i] == ',')
+      index++;
+  }
+  return index;
+}
+
+/*
+   find total number of field in hash_str
+*/
+int fields_in_hash_str(LEX_STRING * hash_lex)
+{
+  int hash_str_length= hash_lex->length;
+  char *hash_str= hash_lex->str;
+  int num_of_fields= 1;
+  for (int i= 0; i<hash_str_length; i++)
+  {
+    if (hash_str[i] == ',' && hash_str[i-1] == '`'
+         && hash_str[i+1] == '`' )
+      num_of_fields++;
+  }
+  return num_of_fields;
+}
+
+/*
+   return fields ptr given by hash_str index
+   for example
+   hash(`abc`,`xyz`)
+   index 1 will return pointer to xyz field
+*/
+Field * field_ptr_in_hash_str(LEX_STRING * hash_str, TABLE *table, int index)
+{
+  char field_name[100]; // 100 is enough i think
+  int temp_index= 0;
+  char *str= hash_str->str;
+  int i= strlen("hash"), j;
+  Field **f, *field;
+  while (i < hash_str->length)
+  {
+    if (str[i] == ',')
+      temp_index++;
+    if (temp_index >= index)
+      break;
+    i++;
+  }
+  i+= 2;  // now i point to first character of field name
+  for (j= 0; str[i+j] !=  '`'; j++)
+    field_name[j]= str[i+j];
+  field_name[j]= '\0';
+  for (f= table->field; f && (field= *f); f++)
+  {
+    if (!my_strcasecmp(system_charset_info, field->field_name, field_name))
+      break;
+  }
+  return field;
+}
+
+/*
+  Remove field name from db_row_hash_* column vcol info str
+  For example
+
+  hash(`abc`,`xyz`)
+  remove "abc" will return
+  0 and hash_str will be set hash(`xyz`) and length will be set
+
+  hash(`xyz`)
+  remove "xyz" will return
+  0 and hash_str will be set NULL and length will be 0
+  hash(`xyz`)
+  remove "xyzff" will return
+  1 no change to hash_str and length
+  TODO a better and less complex logic
+*/
+int rem_field_from_hash_col_str(LEX_STRING * hash_lex, const char * field_name)
+{
+   /* first of all find field_name in hash_str*/
+  char * temp= hash_lex->str;
+  const char * t_field= field_name;
+  int i= find_field_name_in_hash(temp, field_name, hash_lex->length);
+  if ( i != -1)
+  {
+    /*
+      We found the field location
+      First of all we need to find the
+      , position and there can be three
+      situations
+      1. two , not a problem remove any one
+      2. one , remove this
+      3  no , return
+   */
+    // see if there is , before field name
+    int j= strlen(field_name);
+    if (*(temp + i -j-2) == ',')
+    {
+      hash_lex->length= hash_lex->length- j-2-1;//-2 for two '`' and -1 for ','
+      memmove(temp+i-j-2, temp+i+1, hash_lex->length);
+      return 0;
+    }
+    if (*(temp+i+1) == ',')
+    {
+      hash_lex->length= hash_lex->length-j-2-1;//-2 for two '`' and -1 for ','
+      memmove(temp+i-j-1, temp+i+2, hash_lex->length);
+      return 0;
+    }
+    if (*(temp+i+1) == ')')
+    {
+      hash_lex->length= 0;
+      hash_lex->str= NULL;
+      return 0;
+    }
+  }
+  return 1;
+}
+/*   returns 1 if old_name not found in hash_lex 0 other wise*/
+int  change_field_from_hash_col_str(LEX_STRING * hash_lex, const char * old_name,
+                                    char * new_name)
+{
+  /* first of all find field_name in hash_lex*/
+  char * temp= hash_lex->str;
+  const char * t_field= old_name;
+  int i= find_field_name_in_hash(temp, old_name, hash_lex->length);
+  if (i != -1)
+  {
+    int len= hash_lex->length-strlen(old_name) + strlen(new_name);
+    int num= 0;
+    char  temp_arr[len];
+    int s_c_position= i - strlen(old_name);//here it represent the posotion of
+                                          //'`' before old f_name
+    for (int index= 0; index < len; index++)
+    {
+      if (index >= s_c_position && index < s_c_position+strlen(new_name))
+      {
+        temp_arr[index]= new_name[index-s_c_position];
+        continue;
+      }
+      if (index >= s_c_position+strlen(new_name))
+      {
+        temp_arr[index]= temp[i+num];
+        num++;
+        continue;
+      }
+      temp_arr[index]= temp[index];
+    }
+    strcpy(hash_lex->str, temp_arr);
+    hash_lex->length= len;
+    return 0;
+  }
+  return 1;
 }

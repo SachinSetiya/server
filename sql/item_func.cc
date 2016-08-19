@@ -1839,6 +1839,41 @@ void Item_func_int_div::fix_length_and_dec()
 }
 
 
+longlong  Item_func_hash::val_int()
+{
+  unsigned_flag= true;
+  ulong nr1= 1,nr2= 4;
+  CHARSET_INFO *cs;
+  for(uint i= 0;i<arg_count;i++)
+  {
+    String * str = args[i]->val_str();
+    if(args[i]->null_value)
+    {
+      null_value= 1;
+      return 0;
+    }
+    uchar l[4];
+    int4store(l, str->length());
+    cs= &my_charset_utf8_bin;
+    cs->coll->hash_sort(cs, l, sizeof(l), &nr1, &nr2);
+    cs= str->charset();
+    cs->coll->hash_sort(cs, (uchar *)str->ptr(), str->length(), &nr1, &nr2);
+  }
+  null_value= 0;
+  //for testing purpose
+  //nr1=12;
+  return   (longlong)nr1;
+}
+
+
+void  Item_func_hash::fix_length_and_dec()
+{
+  maybe_null= 1;
+  decimals= 0;
+  max_length= 8;
+}
+
+
 longlong Item_func_mod::int_op()
 {
   DBUG_ASSERT(fixed == 1);

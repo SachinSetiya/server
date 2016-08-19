@@ -1879,11 +1879,10 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
 
   for (ptr=table->field ; (field= *ptr); ptr++)
   {
+    if(field->field_visibility==MEDIUM_HIDDEN ||
+        field->field_visibility==FULL_HIDDEN)
+       continue;
     uint flags = field->flags;
-
-    if (ptr != table->field)
-      packet->append(STRING_WITH_LEN(",\n"));
-
     packet->append(STRING_WITH_LEN("  "));
     append_identifier(thd,packet,field->field_name, strlen(field->field_name));
     packet->append(' ');
@@ -1939,6 +1938,11 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
         packet->append(STRING_WITH_LEN(" NULL"));
       }
 
+      if (field->field_visibility == USER_DEFINED_HIDDEN)
+      {
+        packet->append(STRING_WITH_LEN(" HIDDEN"));
+      }
+
       if (get_field_default_value(thd, field, &def_value, 1))
       {
         packet->append(STRING_WITH_LEN(" DEFAULT "));
@@ -1972,6 +1976,25 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
     }
     append_create_options(thd, packet, field->option_list, check_options,
                           hton->field_options);
+    //TODO need a better logic to find wheter to put comma or not
+    int i=1;
+    bool is_comma_needed=false;
+    if (*(ptr+i)!=NULL)
+    {
+      is_comma_needed=true;
+      while((*(ptr+i))->field_visibility==MEDIUM_HIDDEN ||
+            (*(ptr+i))->field_visibility==FULL_HIDDEN)
+      {
+        i++;
+        if(!*(ptr+i))
+        {
+          is_comma_needed =false;
+          break;
+        }
+      }
+    }
+    if(is_comma_needed)
+     packet->append(STRING_WITH_LEN(",\n"));
   }
 
   key_info= table->key_info;
@@ -1986,6 +2009,19 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
   for (uint i=0 ; i < share->keys ; i++,key_info++)
   {
     KEY_PART_INFO *key_part= key_info->key_part;
+    if (key_info->flags & HA_UNIQUE_HASH)
+    {
+      char * column_names= key_part->field->vcol_info->
+                          expr_str.str + HA_HASH_STR_LEN;
+      int length= key_part->field->vcol_info->expr_str.length;
+      length-= HA_HASH_STR_LEN;
+      packet->append(STRING_WITH_LEN(",\n"));
+      packet->append(STRING_WITH_LEN("  UNIQUE KEY `"));
+      packet->append(key_info->name, strlen(key_info->name));
+      packet->append(STRING_WITH_LEN("`"));
+      packet->append(column_names, length);
+      continue;
+    }
     bool found_primary=0;
     packet->append(STRING_WITH_LEN(",\n  "));
 
@@ -5411,6 +5447,10 @@ static int get_schema_column_record(THD *thd, TABLE_LIST *tables,
 
   for (; (field= *ptr) ; ptr++)
   {
+    if(field->field_visibility == FULL_HIDDEN ||
+           field->field_visibility == MEDIUM_HIDDEN)
+      continue;
+    /* For now we will only show UNI or MUL for TODO  */
     uchar *pos;
     char tmp[MAX_FIELD_WIDTH];
     String type(tmp,sizeof(tmp), system_charset_info);
@@ -5465,20 +5505,48 @@ static int get_schema_column_record(THD *thd, TABLE_LIST *tables,
     pos=(uchar*) ((field->flags & PRI_KEY_FLAG) ? "PRI" :
                  (field->flags & UNIQUE_KEY_FLAG) ? "UNI" :
                  (field->flags & MULTIPLE_KEY_FLAG) ? "MUL":"");
+    KEY *key= show_table->key_info;
+    for (int i=0; i<show_table->s->keys; i++, key++)
+    {
+      if (key->flags & HA_UNIQUE_HASH)
+      {
+        LEX_STRING * ls= &key->key_part->field->vcol_info->expr_str;
+        int position= find_field_index_in_hash(ls, field->field_name);
+        int fields= fields_in_hash_str(ls);
+        //this is for single  hash(`abc`)
+        if (position == 0 && fields == 1)
+        {
+            pos= (uchar *) "UNI";
+        }
+        //this is for   hash(`abc`,`xyzs`)
+        if (position == 0 && fields > 1)
+        {
+          pos=(uchar *) "MUL";
+        }
+      }
+    }
     table->field[16]->store((const char*) pos,
                             strlen((const char*) pos), cs);
-
+    StringBuffer<256> buf;
     if (field->unireg_check == Field::NEXT_NUMBER)
-      table->field[17]->store(STRING_WITH_LEN("auto_increment"), cs);
+      buf.set(STRING_WITH_LEN("auto_increment"),cs);
     if (print_on_update_clause(field, &type, true))
-      table->field[17]->store(type.ptr(), type.length(), cs);
+      buf.set(type.ptr(), type.length(),cs);
     if (field->vcol_info)
     {
       if (field->vcol_info->stored_in_db)
-        table->field[17]->store(STRING_WITH_LEN("PERSISTENT"), cs);
+        buf.set(STRING_WITH_LEN("PERSISTENT"), cs);
       else
-        table->field[17]->store(STRING_WITH_LEN("VIRTUAL"), cs);
+        buf.set(STRING_WITH_LEN("VIRTUAL"), cs);
     }
+    /*hidden can coexist with auto_increment and virtual */
+    if(field->field_visibility==USER_DEFINED_HIDDEN)
+    {
+      if (buf.length())
+        buf.append(STRING_WITH_LEN(" , "));
+      buf.append(STRING_WITH_LEN("HIDDEN"),cs);
+    }
+    table->field[17]->store(buf.ptr(), buf.length(), cs);
     table->field[19]->store(field->comment.str, field->comment.length, cs);
     if (schema_table_store_record(thd, table))
       DBUG_RETURN(1);
@@ -6030,6 +6098,89 @@ err:
   DBUG_RETURN(res);
 }
 
+static int print_get_schema_stat_keypart(THD *thd, TABLE_LIST *tables,
+																				 TABLE *table,TABLE *show_table,
+																				 LEX_STRING *db_name,
+																				 LEX_STRING *table_name,
+																				 KEY * key_info,KEY_PART_INFO
+																				 *key_part,Field * field ,int i,int j)
+{
+  CHARSET_INFO *cs= system_charset_info;
+  const char *str;
+  restore_record(table, s->default_values);
+  table->field[0]->store(STRING_WITH_LEN("def"), cs);
+  table->field[1]->store(db_name->str, db_name->length, cs);
+  table->field[2]->store(table_name->str, table_name->length, cs);
+  table->field[3]->store((longlong) ((key_info->flags &
+                                      HA_NOSAME) ? 0 : 1), TRUE);
+  table->field[4]->store(db_name->str, db_name->length, cs);
+  table->field[5]->store(key_info->name, strlen(key_info->name), cs);
+  table->field[6]->store((longlong) (j+1), TRUE);
+  str=field ? field->field_name :"?unknown field?";
+  table->field[7]->store(str, strlen(str), cs);
+  if (show_table->file)
+  {
+    if (show_table->file->index_flags(i, j, 0) & HA_READ_ORDER)
+    {
+      table->field[8]->store(((key_part->key_part_flag &
+                               HA_REVERSE_SORT) ?
+                              "D" : "A"), 1, cs);
+      table->field[8]->set_notnull();
+    }
+    KEY *key=show_table->key_info+i;
+    if (key->rec_per_key[j])
+    {
+      ha_rows records= (ha_rows) ((double) show_table->stat_records() /
+                                  key->actual_rec_per_key(j));
+      table->field[9]->store((longlong) records, TRUE);
+      table->field[9]->set_notnull();
+    }
+    /*
+      In the case of long unique hash as we try
+      to calc key->rec_per_key[j] it will give zero
+      so cardinality will be set to null we do not want
+      this so
+     */
+    if (key_info->flags & HA_UNIQUE_HASH)
+    {
+      table->field[9]->store(0, TRUE);
+      table->field[9]->set_notnull();
+    }
+    if (key_info->flags & HA_UNIQUE_HASH)
+      table->field[13]->store(HA_HASH_STR_INDEX,HA_HASH_STR_INDEX_LEN , cs);
+    else
+    {
+      str= show_table->file->index_type(i);
+      table->field[13]->store(str, strlen(str), cs);
+    }
+  }
+  if (!(key_info->flags & HA_FULLTEXT) &&
+      (key_part->field &&
+       key_part->length !=
+       show_table->s->field[key_part->fieldnr-1]->key_length()))
+  {
+    table->field[10]->store((longlong) key_part->length /
+                            key_part->field->charset()->mbmaxlen, TRUE);
+    table->field[10]->set_notnull();
+  }
+  uint flags= key_part->field ? key_part->field->flags : 0;
+  const char *pos=(char*) ((flags & NOT_NULL_FLAG) ? "" : "YES");
+  table->field[12]->store(pos, strlen(pos), cs);
+  if (!show_table->s->keys_in_use.is_set(i))
+    table->field[14]->store(STRING_WITH_LEN("disabled"), cs);
+  else
+    table->field[14]->store("", 0, cs);
+  table->field[14]->set_notnull();
+  DBUG_ASSERT(MY_TEST(key_info->flags & HA_USES_COMMENT) ==
+             (key_info->comment.length > 0));
+  if (key_info->flags & HA_USES_COMMENT)
+    table->field[15]->store(key_info->comment.str,
+                            key_info->comment.length, cs);
+  if (schema_table_store_record(thd, table))
+    return 1;
+  return 0;
+}
+
 
 static int get_schema_stat_record(THD *thd, TABLE_LIST *tables,
 				  TABLE *table, bool res,
@@ -6066,74 +6217,40 @@ static int get_schema_stat_record(THD *thd, TABLE_LIST *tables,
                              HA_STATUS_TIME);
       set_statistics_for_table(thd, show_table);
     }
-    for (uint i=0 ; i < show_table->s->keys ; i++,key_info++)
+    for (uint i=0 ; i < show_table->s->keys ; i++, key_info++)
     {
       KEY_PART_INFO *key_part= key_info->key_part;
-      const char *str;
-      for (uint j=0 ; j < key_info->user_defined_key_parts ; j++,key_part++)
+      for (uint j=0 ; j < key_info->user_defined_key_parts; j++, key_part++)
       {
-        restore_record(table, s->default_values);
-        table->field[0]->store(STRING_WITH_LEN("def"), cs);
-        table->field[1]->store(db_name->str, db_name->length, cs);
-        table->field[2]->store(table_name->str, table_name->length, cs);
-        table->field[3]->store((longlong) ((key_info->flags &
-                                            HA_NOSAME) ? 0 : 1), TRUE);
-        table->field[4]->store(db_name->str, db_name->length, cs);
-        table->field[5]->store(key_info->name, strlen(key_info->name), cs);
-        table->field[6]->store((longlong) (j+1), TRUE);
-        str=(key_part->field ? key_part->field->field_name :
-             "?unknown field?");
-        table->field[7]->store(str, strlen(str), cs);
-        if (show_table->file)
+
+        if (key_info->flags & HA_UNIQUE_HASH && key_info->key_part->field)
         {
-          if (show_table->file->index_flags(i, j, 0) & HA_READ_ORDER)
+          LEX_STRING *ls = &key_info->key_part->field->vcol_info->expr_str;
+          int total_fields= fields_in_hash_str(ls);
+          int counter= 0;
+          Field *fld;
+          while (counter < total_fields)
           {
-            table->field[8]->store(((key_part->key_part_flag &
-                                     HA_REVERSE_SORT) ?
-                                    "D" : "A"), 1, cs);
-            table->field[8]->set_notnull();
+            fld= field_ptr_in_hash_str(ls, show_table, counter);
+            if(print_get_schema_stat_keypart(thd, tables, table,
+                                             show_table, db_name,
+                                             table_name, key_info,
+                                             key_part, fld, i, counter))
+              DBUG_RETURN(1);
+            counter++;
           }
-          KEY *key=show_table->key_info+i;
-          if (key->rec_per_key[j])
-          {
-            ha_rows records= (ha_rows) ((double) show_table->stat_records() /
-                                        key->actual_rec_per_key(j));
-            table->field[9]->store((longlong) records, TRUE);
-            table->field[9]->set_notnull();
-          }
-          str= show_table->file->index_type(i);
-          table->field[13]->store(str, strlen(str), cs);
+
+          continue;
         }
-        if (!(key_info->flags & HA_FULLTEXT) &&
-            (key_part->field &&
-             key_part->length !=
-             show_table->s->field[key_part->fieldnr-1]->key_length()))
-        {
-          table->field[10]->store((longlong) key_part->length /
-                                  key_part->field->charset()->mbmaxlen, TRUE);
-          table->field[10]->set_notnull();
-        }
-        uint flags= key_part->field ? key_part->field->flags : 0;
-        const char *pos=(char*) ((flags & NOT_NULL_FLAG) ? "" : "YES");
-        table->field[12]->store(pos, strlen(pos), cs);
-        if (!show_table->s->keys_in_use.is_set(i))
-          table->field[14]->store(STRING_WITH_LEN("disabled"), cs);
-        else
-          table->field[14]->store("", 0, cs);
-        table->field[14]->set_notnull();
-        DBUG_ASSERT(MY_TEST(key_info->flags & HA_USES_COMMENT) ==
-                   (key_info->comment.length > 0));
-        if (key_info->flags & HA_USES_COMMENT)
-          table->field[15]->store(key_info->comment.str, 
-                                  key_info->comment.length, cs);
-        if (schema_table_store_record(thd, table))
+
+        if(print_get_schema_stat_keypart(thd, tables,table,show_table,db_name,
+                                         table_name,key_info,key_part,key_part->field,i,j))
           DBUG_RETURN(1);
       }
     }
   }
   DBUG_RETURN(res);
 }
-
 
 static int get_schema_views_record(THD *thd, TABLE_LIST *tables,
 				   TABLE *table, bool res,
@@ -6512,6 +6629,29 @@ static int get_schema_key_column_usage_record(THD *thd,
                            HA_STATUS_TIME);
     for (uint i=0 ; i < show_table->s->keys ; i++, key_info++)
     {
+      if(key_info->flags&HA_UNIQUE_HASH && key_info->key_part->field)
+      {
+        LEX_STRING *ls = &key_info->key_part->field->vcol_info->expr_str;
+        int total_fields= fields_in_hash_str(ls);
+        int counter= 0;
+        Field *fld;
+
+        while (counter < total_fields)
+        {
+          fld= field_ptr_in_hash_str(ls, show_table, counter);
+          counter++;
+          restore_record(table, s->default_values);
+          store_key_column_usage(table, db_name, table_name,
+                                 key_info->name,
+                                 strlen(key_info->name),
+                                 fld->field_name,
+                                 strlen(fld->field_name),
+                                 (longlong)counter );
+          if (schema_table_store_record(thd, table))
+            DBUG_RETURN(1);
+        }
+        continue;
+      }
       if (i != primary_key && !(key_info->flags & HA_NOSAME))
         continue;
       uint f_idx= 0;

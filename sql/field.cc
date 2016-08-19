@@ -1681,7 +1681,8 @@ String *Field::val_int_as_str(String *val_buffer, bool unsigned_val)
 Field::Field(uchar *ptr_arg,uint32 length_arg,uchar *null_ptr_arg,
 	     uchar null_bit_arg,
 	     utype unireg_check_arg, const char *field_name_arg)
-  :ptr(ptr_arg), null_ptr(null_ptr_arg), table(0), orig_table(0),
+	:ptr(ptr_arg), null_ptr(null_ptr_arg), field_visibility(NOT_HIDDEN),
+	is_long_column_hash(false),table(0), orig_table(0),
   table_name(0), field_name(field_name_arg), option_list(0),
   option_struct(0), key_start(0), part_of_key(0),
   part_of_key_not_clustered(0), part_of_sortkey(0),
@@ -7671,7 +7672,6 @@ uint32 Field_varstring::data_length()
 {
   return length_bytes == 1 ? (uint32) *ptr : uint2korr(ptr);
 }
-
 /*
   Functions to create a packed row.
   Here the number of length bytes are depending on the given max_length
@@ -9439,7 +9439,7 @@ int Field_bit::key_cmp(const uchar *str, uint length)
 }
 
 
-int Field_bit::cmp_offset(uint row_offset)
+int Field_bit::cmp_offset(long row_offset)
 {
   if (bit_len)
   {
@@ -10516,6 +10516,8 @@ Column_definition::Column_definition(THD *thd, Field *old_field,
   default_value=    old_field->default_value;
   check_constraint= old_field->check_constraint;
   option_list= old_field->option_list;
+  field_visibility= old_field->field_visibility;
+  is_long_column_hash= old_field->is_long_column_hash;
 
   switch (sql_type) {
   case MYSQL_TYPE_BLOB:

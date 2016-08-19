@@ -198,6 +198,17 @@ static int check_insert_fields(THD *thd, TABLE_LIST *table_list,
   TABLE *table= table_list->table;
   DBUG_ENTER("check_insert_fields");
 
+  List_iterator<Item> i_iter(values);
+  int num_of_hiddens_fields= 0;
+  if (!fields.elements)
+  {
+    Field ** f= table->field, *field;
+    for (; f && (field= *f); f++)
+    {
+      if (field->field_visibility != NOT_HIDDEN)
+        num_of_hiddens_fields++;
+    }
+   }
   if (!table_list->single_table_updatable())
   {
     my_error(ER_NON_INSERTABLE_TABLE, MYF(0), table_list->alias, "INSERT");
@@ -212,7 +223,7 @@ static int check_insert_fields(THD *thd, TABLE_LIST *table_list,
                table_list->view_db.str, table_list->view_name.str);
       DBUG_RETURN(-1);
     }
-    if (values.elements != table->s->fields)
+    if (values.elements+num_of_hiddens_fields != table->s->fields)
     {
       my_error(ER_WRONG_VALUE_COUNT_ON_ROW, MYF(0), 1L);
       DBUG_RETURN(-1);
@@ -1398,6 +1409,7 @@ bool mysql_prepare_insert(THD *thd, TABLE_LIST *table_list,
   Name_resolution_context_state ctx_state;
   bool insert_into_view= (table_list->view != 0);
   bool res= 0;
+  bool is_field_specified_for_view= fields.elements > 0;
   table_map map= 0;
   DBUG_ENTER("mysql_prepare_insert");
   DBUG_PRINT("enter", ("table_list: 0x%lx  table: 0x%lx  view: %d",
@@ -1485,7 +1497,28 @@ bool mysql_prepare_insert(THD *thd, TABLE_LIST *table_list,
                                update_values, false, &map);
       select_lex->no_wrap_view_item= FALSE;
     }
+    /*
+      Reason for this condition
+      suppose this
+        create table t1 (a int , b int , c int hidden , d int);
+        create view v as select a,b,c,d from t1;
+      now query like this fails
+        insert into v values(1,1,1)
+      because in insert_view_fields we copy all the fields
+      whether they are hidden or not we can not do the change
+      there because there we have only fields name so we need
+      to manually setup fields as insert_view_fields is called
+      by only mysql_prepare_insert_check_table function and
+      mysql_prepare_insert_check_table is called by only by this
+      function so it is safe to do here
 
+      NOT YET IMPLEMENTED
+    if (insert_into_view && !is_field_specified_for_view
+         && fields.elements)
+    {
+      Item *ii= fields.pop();
+    }
+    **/
     /* Restore the current context. */
     ctx_state.restore_state(context, table_list);
   }
@@ -1541,8 +1574,22 @@ static int last_uniq_key(TABLE *table,uint keynr)
   if (table->file->ha_table_flags() & HA_DUPLICATE_KEY_NOT_IN_ORDER)
     return 0;
 
+  /*
+    Currently in case of long unique keys we detect voiliation of
+    these keys earlier then other keys so according to this logic
+    if we get key no 3 as voilated that means 0-2 keys are not voilated
+    but this is not true because we never checked for 0-2 keys
+    althought this should not be problem untill this function
+    this func is used before ha_update_row() the logic is this if
+    voilated key is last then we change this and directly do update rather
+    then delete+insert so if keynr is HA_UNIQUE_HASH then simple return
+    0
+   */
+  if (keynr < table->s->keys &&
+      table->key_info[keynr].flags &  HA_UNIQUE_HASH)
+    return 0;
   while (++keynr < table->s->keys)
-    if (table->key_info[keynr].flags & HA_NOSAME)
+    if (table->key_info[keynr].flags & (HA_NOSAME | HA_UNIQUE_HASH))
       return 0;
   return 1;
 }
