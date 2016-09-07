@@ -4153,7 +4153,12 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
          }
 	}
       }
-      key_part_info->length= (uint16) key_part_length;
+      /* We can not store key_part_length more then 2^16 - 1 in frm
+         So we will simply make it zero */
+      if (is_hash_field_added && key_part_length != (uint16) key_part_length)
+        key_part_info->length= 0;
+      else
+        key_part_info->length= (uint16) key_part_length;
       /* Use packed keys for long strings on the first column */
       if (!((*db_options) & HA_OPTION_NO_PACK_KEYS) &&
           !((create_info->table_options & HA_OPTION_NO_PACK_KEYS)) &&
@@ -8034,7 +8039,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
                 if (field->max_display_length() > table->file->max_key_part_length())
                 {
                   is_hash_key= true;
-                  break;
+                  goto exit;
                 }
                 total_length+= field->max_display_length();
               }
@@ -8073,6 +8078,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
             }
           }
         }
+        exit:
         if (is_hash_key || total_length > table->file->max_key_length())
         {
           alter_info->flags |= Alter_info::ALTER_ADD_CHECK_CONSTRAINT;
