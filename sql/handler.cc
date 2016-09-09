@@ -2618,6 +2618,8 @@ int handler::ha_index_read_map(uchar *buf, const uchar *key,
               m_lock_type != F_UNLCK);
   DBUG_ASSERT(inited==INDEX);
 
+  if (table->key_info[active_index].flags & HA_UNIQUE_HASH)
+    DBUG_RETURN(get_hash_key(current_thd, table, this, active_index, buf, (uchar *)key));
   TABLE_IO_WAIT(tracker, m_psi, PSI_TABLE_FETCH_ROW, active_index, 0,
     { result= index_read_map(buf, key, keypart_map, find_flag); })
   increment_statistics(&SSV::ha_read_key_count);
@@ -5379,6 +5381,9 @@ int handler::compare_key(key_range *range)
   int cmp;
   if (!range || in_range_check_pushed_down)
     return 0;					// No max range
+  // in case of HA_UNIQUE_HASH we compare key in get_hash_key itself
+  if (!(table->key_info[active_index].flags & HA_UNIQUE_HASH))
+    return 0;
   cmp= key_cmp(range_key_part, range->key, range->length);
   if (!cmp)
     cmp= key_compare_result_on_equal;

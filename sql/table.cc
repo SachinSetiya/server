@@ -8150,7 +8150,6 @@ void re_setup_table(TABLE *table)
     }
   }
   table->s->key_parts+= extra_key_parts_ex_hash;
-  table->s->extra_hash_parts= extra_hash_parts;
   if (s_keyinfo)
   {
     for (uint i= 0; i < table->s->keys; i++, s_keyinfo++)
@@ -8234,8 +8233,8 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
   }
   else
     int8store(hash_buff, nr1);
-
-  result= h->ha_index_init(key_index, 0);
+  if (!is_index_inited)
+    result= h->ha_index_init(key_index, 0);
   if (result)
     return result;
 
