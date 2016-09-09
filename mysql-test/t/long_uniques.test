@@ -379,3 +379,46 @@ select * from t2 where DB_ROW_HASH_1 in (select DB_ROW_HASH_1 from t1);
 select DB_ROW_HASH_1 from t1,t2 where t1.DB_ROW_HASH_1 = t2.DB_ROW_HASH_2;
 --echo #this statement crashes the server because of optimizer select DB_ROW_HASH_1 from t1 inner join t2 on t1.a = t2.DB_ROW_HASH_1;
 drop table t1,t2;
+
+--echo #very long blob entry;
+SET @@GLOBAL.max_allowed_packet=67108864;
+
+connect ('newcon', localhost, root,,);
+--connection newcon
+show variables like 'max_allowed_packet';
+create table t1(a longblob unique, b longblob , c longblob , unique(b,c));
+desc t1;
+show create table t1;
+show keys from t1;
+insert into t1 values(concat(repeat('sachin',10000000),'1'),concat(repeat('sachin',10000000),'1'),
+concat(repeat('sachin',10000000),'1'));
+insert into t1 values(concat(repeat('sachin',10000000),'2'),concat(repeat('sachin',10000000),'2'),
+concat(repeat('sachin',10000000),'1'));
+--error ER_DUP_ENTRY
+insert into t1 values(concat(repeat('sachin',10000000),'2'),concat(repeat('sachin',10000000),'2'),
+concat(repeat('sachin',10000000),'4'));
+--error ER_DUP_ENTRY
+insert into t1 values(concat(repeat('sachin',10000000),'3'),concat(repeat('sachin',10000000),'1'),
+concat(repeat('sachin',10000000),'1'));
+drop table t1;
+
+--echo #long key unique with different key length
+create table t1(a blob, unique(a(3000)));
+desc t1;
+show keys from t1;
+show create table t1;
+insert into t1 value(concat(repeat('s',3000),'1'));
+--error ER_DUP_ENTRY
+insert into t1 value(concat(repeat('s',3000),'2'));
+insert into t1 value(concat(repeat('a',3000),'2'));
+drop table t1;
+
+create table t1(a varchar(4000), b longblob , c varchar(5000), d longblob, 
+unique(a(3500), b(1000000)), unique(c(4500), d(10000000)));
+desc t1;
+show create table t1;
+show keys from t1;
+drop table t1;
+disconnect newcon;
+--connection default
+SET @@GLOBAL.max_allowed_packet=4194304;

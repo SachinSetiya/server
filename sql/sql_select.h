@@ -1734,11 +1734,11 @@ public:
   enum store_key_result { STORE_KEY_OK, STORE_KEY_FATAL, STORE_KEY_CONV };
   enum Type { FIELD_STORE_KEY, ITEM_STORE_KEY, CONST_ITEM_STORE_KEY };
   store_key(THD *thd, Field *field_arg, uchar *ptr, uchar *null, uint length,
-            bool is_hash_key= false)
-    :null_key(0), hash_key(is_hash_key), null_ptr(null), err(0)
+            bool is_hash_key_part= false)
+    :null_key(0), hash_key(is_hash_key_part), null_ptr(null), err(0)
   {
     to_field=field_arg->new_key_field(thd->mem_root, field_arg->table,
-                                      ptr, length, null, 1, is_hash_key);
+                                   ptr, length, null, 1, is_hash_key_part);
   }
   store_key(store_key &arg)
     :Sql_alloc(), null_key(arg.null_key), hash_key(arg.hash_key),
@@ -1791,10 +1791,10 @@ class store_key_field: public store_key
   store_key_field(THD *thd, Field *to_field_arg, uchar *ptr,
                   uchar *null_ptr_arg,
       uint length, Field *from_field, const char *name_arg,
-                  bool is_hash_key= false)
+                  bool is_hash_key_part= false)
     :store_key(thd, to_field_arg,ptr,
 	       null_ptr_arg ? null_ptr_arg : from_field->maybe_null() ? &err
-         : (uchar*) 0, length, is_hash_key), field_name(name_arg)
+         : (uchar*) 0, length, is_hash_key_part), field_name(name_arg)
   {
     if (to_field)
     {
@@ -1846,10 +1846,10 @@ class store_key_item :public store_key
 public:
   store_key_item(THD *thd, Field *to_field_arg, uchar *ptr,
                  uchar *null_ptr_arg, uint length, Item *item_arg, bool val
-                 ,bool is_hash_key= false)
+                 ,bool is_hash_key_part= false)
     :store_key(thd, to_field_arg, ptr,
 	       null_ptr_arg ? null_ptr_arg : item_arg->maybe_null ?
-         &err : (uchar*) 0, length, is_hash_key), item(item_arg), use_value(val)
+         &err : (uchar*) 0, length, is_hash_key_part), item(item_arg), use_value(val)
   {}
   store_key_item(store_key &arg, Item *new_item, bool val)
     :store_key(arg), item(new_item), use_value(val)
@@ -1899,10 +1899,10 @@ class store_key_const_item :public store_key_item
 public:
   store_key_const_item(THD *thd, Field *to_field_arg, uchar *ptr,
 		       uchar *null_ptr_arg, uint length,
-           Item *item_arg,bool is_hash_key= false)
+           Item *item_arg,bool is_hash_key_part= false)
     :store_key_item(thd, to_field_arg, ptr,
 		    null_ptr_arg ? null_ptr_arg : item_arg->maybe_null ?
-        &err : (uchar*) 0, length, item_arg, FALSE, is_hash_key), inited(0)
+        &err : (uchar*) 0, length, item_arg, FALSE, is_hash_key_part), inited(0)
   {
   }
   store_key_const_item(store_key &arg, Item *new_item)

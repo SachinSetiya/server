@@ -345,6 +345,8 @@ enum  field_visible_type{
 #define HA_HASH_KEY_LENGTH_WITHOUT_NULL 8
 #define HA_HASH_FIELD_LENGTH            8
 #define HA_HASH_KEY_LENGTH_WITH_NULL    9
+//TODO is this correct ? how about size of char ptr on 32/16 bit machine?
+#define HA_HASH_KEY_PART_LENGTH         4 + 8 // 4 for length , 8 for portable size of char ptr
 const LEX_CSTRING ha_hash_str           {STRING_WITH_LEN("HASH")};
 
 int find_field_pos_in_hash(Item *hash_item, const char * field_name);

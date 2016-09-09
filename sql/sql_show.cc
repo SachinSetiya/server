@@ -2031,7 +2031,7 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
       if (key_part->field &&
           (key_part->length !=
            table->field[key_part->fieldnr-1]->key_length() &&
-           !(key_info->flags & (HA_FULLTEXT | HA_SPATIAL | HA_UNIQUE_HASH))))
+           !(key_info->flags & (HA_FULLTEXT | HA_SPATIAL ))))
       {
         packet->append_parenthesized((long) key_part->length /
                                       key_part->field->charset()->mbmaxlen);

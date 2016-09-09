@@ -729,7 +729,7 @@ public:
     GEOM_MULTIPOINT = 4, GEOM_MULTILINESTRING = 5, GEOM_MULTIPOLYGON = 6,
     GEOM_GEOMETRYCOLLECTION = 7
   };
-  enum imagetype { itRAW, itMBR};
+  enum imagetype { itRAW, itMBR, itHASH};
 
   utype		unireg_check;
   uint32	field_length;		// Length of field
@@ -1179,7 +1179,7 @@ public:
   virtual Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                                uchar *new_ptr, uint32 length,
                                uchar *new_null_ptr, uint new_null_bit,
-                               bool is_hash_key= false);
+                               bool is_hash_key_part= false);
   Field *clone(MEM_ROOT *mem_root, TABLE *new_table);
   Field *clone(MEM_ROOT *mem_root, TABLE *new_table, my_ptrdiff_t diff,
                bool stat_flag= FALSE);
@@ -2690,7 +2690,7 @@ public:
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
                        uchar *new_null_ptr, uint new_null_bit,
-                       bool is_hash_key= false);
+                       bool is_hash_key_part= false);
   Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item);
 };
 
@@ -3176,7 +3176,7 @@ public:
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
                        uchar *new_null_ptr, uint new_null_bit,
-                       bool is_hash_key= false);
+                       bool is_hash_key_part= false);
   uint is_equal(Create_field *new_field);
   void hash(ulong *nr, ulong *nr2);
   uint length_size() { return length_bytes; }
@@ -3339,7 +3339,7 @@ public:
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
                        uchar *new_null_ptr, uint new_null_bit,
-                       bool is_hash_key);
+                       bool is_hash_key_part);
   void sql_type(String &str) const;
   inline bool copy()
   {
@@ -3687,7 +3687,7 @@ public:
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
                        uchar *new_null_ptr, uint new_null_bit,
-                       bool is_hash_key= false);
+                       bool is_hash_key_part= false);
   void set_bit_ptr(uchar *bit_ptr_arg, uchar bit_ofs_arg)
   {
     bit_ptr= bit_ptr_arg;

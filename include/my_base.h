@@ -306,6 +306,11 @@ enum ha_base_keytype {
 #define HA_BIT_PART		1024
 #define HA_CAN_MEMCMP           2048 /* internal, never stored in frm */
 
+/*
+  Used for key parts whole length is greater then > file->max_key_part_length
+  Only used for HA_UNIQUE_HASH keys
+*/ //TODO a better name ??
+#define HA_HASH_KEY_PART_FLAG   4096
 	/* optionbits for database */
 #define HA_OPTION_PACK_RECORD		1
 #define HA_OPTION_PACK_KEYS		2

@@ -2110,9 +2110,12 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         field= key_part->field= share->field[key_part->fieldnr-1];
         key_part->type= field->key_type();
         if (keyinfo->flags & HA_UNIQUE_HASH
-            //last key_part is for hash so we will not change length
-            && i+1 != key_parts)
-          key_part->store_length= 12;
+            &&(key_part->length > handler_file->max_key_part_length()
+             || key_part->length == 0))
+        {
+          key_part->key_part_flag= HA_HASH_KEY_PART_FLAG;
+          key_part->store_length= HA_HASH_KEY_PART_LENGTH;
+        }
         if (field->null_ptr)
         {
           key_part->null_offset=(uint) ((uchar*) field->null_ptr -
@@ -7975,9 +7978,7 @@ int fields_in_hash_str(Item * hash_item)
 
 /*
    Returns fields ptr given by hash_str index
-   for example
-   hash(`abc`,`xyz`)
-   index 1 will return pointer to xyz field
+   Index starts from 0
 */
 Field * field_ptr_in_hash_str(Item *hash_item, int index)
 {

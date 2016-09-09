@@ -2256,7 +2256,7 @@ Field *Field::make_new_field(MEM_ROOT *root, TABLE *new_table,
 Field *Field::new_key_field(MEM_ROOT *root, TABLE *new_table,
                             uchar *new_ptr, uint32 length,
                             uchar *new_null_ptr, uint new_null_bit,
-                            bool is_hash_key)
+                            bool is_hash_key_part)
 {
   Field *tmp;
   if ((tmp= make_new_field(root, new_table, table == new_table)))
@@ -5853,7 +5853,7 @@ void Field_time::set_curdays(THD *thd)
 Field *Field_time::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                  uchar *new_ptr, uint32 length,
                                  uchar *new_null_ptr, uint new_null_bit,
-                                 bool is_hash_key)
+                                 bool is_hash_key_part)
 {
   THD *thd= get_thd();
   Field_time *res=
@@ -7817,9 +7817,9 @@ Field *Field_varstring::make_new_field(MEM_ROOT *root, TABLE *new_table,
 Field *Field_varstring::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                       uchar *new_ptr, uint32 length,
                                       uchar *new_null_ptr, uint new_null_bit,
-                                      bool is_hash_key)
+                                      bool is_hash_key_part)
 {
-  if (is_hash_key)
+  if (is_hash_key_part)
   {
     Field_blob *res;
     if ((res= (Field_blob*) Field::new_key_field(root, new_table,
@@ -8185,6 +8185,13 @@ uint Field_blob::get_key_image(uchar *buff,uint length, imagetype type_arg)
 #endif /*HAVE_SPATIAL*/
 
   get_ptr(&blob);
+  if (type_arg == itHASH)
+  {
+    int4store(buff, blob_length);
+    buff+=4;
+    memcpy(buff, ptr+packlength, sizeof(char*));
+    return HA_HASH_KEY_PART_LENGTH;
+  }
   uint local_char_length= length / field_charset->mbmaxlen;
   local_char_length= my_charpos(field_charset, blob, blob + blob_length,
                           local_char_length);
@@ -8238,10 +8245,10 @@ int Field_blob::key_cmp(const uchar *a,const uchar *b)
 Field *Field_blob::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                  uchar *new_ptr, uint32 length,
                                  uchar *new_null_ptr, uint new_null_bit,
-                                 bool is_hash_key)
+                                 bool is_hash_key_part)
 {
 
-  if (is_hash_key)
+  if (is_hash_key_part)
   {
     Field_blob *res;
     if ((res= (Field_blob*) Field::new_key_field(root, new_table,
@@ -9263,7 +9270,7 @@ Field_bit::do_last_null_byte() const
 Field *Field_bit::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                 uchar *new_ptr, uint32 length, 
                                 uchar *new_null_ptr, uint new_null_bit,
-                                bool is_hash_key)
+                                bool is_hash_key_part)
 {
   Field_bit *res;
   if ((res= (Field_bit*) Field::new_key_field(root, new_table, new_ptr, length,

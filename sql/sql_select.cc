@@ -121,7 +121,7 @@ static uint cache_record_length(JOIN *join,uint index);
 static store_key *get_store_key(THD *thd,
 				KEYUSE *keyuse, table_map used_tables,
 				KEY_PART_INFO *key_part, uchar *key_buff,
-        uint maybe_null, bool is_hash_key);
+        uint maybe_null, bool is_hash_key_part);
 static bool make_outerjoin_info(JOIN *join);
 static Item*
 make_cond_after_sjm(THD *thd, Item *root_cond, Item *cond, table_map tables,
@@ -8908,6 +8908,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
   KEY *keyinfo;
   KEYUSE *keyuse= org_keyuse;
   bool ftkey= (keyuse->keypart == FT_KEYPART);
+  bool is_hash_key_part;
   THD *thd= join->thd;
   DBUG_ENTER("create_ref_for_key");
 
@@ -9029,6 +9030,10 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
       if (keyuse->null_rejecting) 
         j->ref.null_rejecting|= (key_part_map)1 << i;
       keyuse_uses_no_tables= keyuse_uses_no_tables && !keyuse->used_tables;
+      is_hash_key_part= keyinfo->key_part[keyuse->keypart].key_part_flag &
+                                                            HA_UNIQUE_HASH;
+      if (is_hash_key_part)
+        DBUG_ASSERT(keyinfo->flags & HA_UNIQUE_HASH);
       /*
         Todo: we should remove this check for thd->lex->describe on the next
         line. With SHOW EXPLAIN code, EXPLAIN printout code no longer depends
@@ -9044,7 +9049,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
                            maybe_null ?  key_buff : 0,
                            keyinfo->key_part[i].length,
                            keyuse->val,
-                           FALSE, keyinfo->flags & HA_UNIQUE_HASH);
+                           FALSE, is_hash_key_part);
 	if (thd->is_fatal_error)
 	  DBUG_RETURN(TRUE);
 	tmp.copy();
@@ -9054,7 +9059,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
 	*ref_key++= get_store_key(thd,
 				  keyuse,join->const_table_map,
 				  &keyinfo->key_part[i],
-          key_buff, maybe_null, keyinfo->flags & HA_UNIQUE_HASH);
+          key_buff, maybe_null, is_hash_key_part);
       /*
 	Remember if we are going to use REF_OR_NULL
 	But only if field _really_ can be null i.e. we force JT_REF
@@ -9110,7 +9115,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
 static store_key *
 get_store_key(THD *thd, KEYUSE *keyuse, table_map used_tables,
         KEY_PART_INFO *key_part, uchar *key_buff, uint maybe_null,
-              bool is_hash_key)
+              bool is_hash_key_part)
 {
   if (!((~used_tables) & keyuse->used_tables))		// if const item
   {
@@ -9119,7 +9124,7 @@ get_store_key(THD *thd, KEYUSE *keyuse, table_map used_tables,
 				    key_buff + maybe_null,
 				    maybe_null ? key_buff : 0,
 				    key_part->length,
-            keyuse->val, is_hash_key);
+            keyuse->val, is_hash_key_part);
   }
   else if (keyuse->val->type() == Item::FIELD_ITEM ||
            (keyuse->val->type() == Item::REF_ITEM &&
@@ -9134,14 +9139,14 @@ get_store_key(THD *thd, KEYUSE *keyuse, table_map used_tables,
 			       maybe_null ? key_buff : 0,
 			       key_part->length,
 			       ((Item_field*) keyuse->val->real_item())->field,
-             keyuse->val->real_item()->full_name(), is_hash_key);
+             keyuse->val->real_item()->full_name(), is_hash_key_part);
 
   return new store_key_item(thd,
 			    key_part->field,
 			    key_buff + maybe_null,
 			    maybe_null ? key_buff : 0,
 			    key_part->length,
-          keyuse->val, FALSE, is_hash_key);
+          keyuse->val, FALSE, is_hash_key_part);
 }
 
 
