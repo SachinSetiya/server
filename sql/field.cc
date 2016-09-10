@@ -7757,6 +7757,19 @@ uint Field_varstring::get_key_image(uchar *buff, uint length,
                                 local_char_length);
   set_if_smaller(f_length, local_char_length);
   /* Key is always stored with 2 bytes */
+  if (type_arg == itHASH)
+  {
+    DBUG_ASSERT(this->table->in_use);
+    uchar *ptr;
+    if (!(ptr= (uchar *)alloc_root(this->table->in_use->mem_root,
+                                  f_length)))
+      return 0;
+    memcpy(ptr, pos, f_length);
+    int4store(buff, f_length);
+    buff+=4;;
+    memcpy(buff, (uchar *)&ptr, sizeof(char*));
+    return HA_HASH_KEY_PART_LENGTH;
+  }
   int2store(buff,f_length);
   memcpy(buff+HA_KEY_BLOB_LENGTH, pos, f_length);
   if (f_length < length)
@@ -7821,15 +7834,12 @@ Field *Field_varstring::new_key_field(MEM_ROOT *root, TABLE *new_table,
 {
   if (is_hash_key_part)
   {
-    Field_blob *res;
-    if ((res= (Field_blob*) Field::new_key_field(root, new_table,
-                                                      new_ptr, length,
-                                                      new_null_ptr, new_null_bit)))
-    {
-      res->set_packlength(4);
-      res->init(new_table);
-      res->flags|= BLOB_FLAG;
-    }
+    Field_blob *res= new(root) Field_blob(new_ptr, new_null_ptr, new_null_bit, Field::NONE,
+                                          this->field_name, table->s, 4, field_charset);
+    table->s->blob_fields--;
+    res->field_index= this->field_index;
+    res->init(new_table);
+    res->flags|= BLOB_FLAG;
     return res;
   }
   Field_varstring *res;
@@ -8187,9 +8197,15 @@ uint Field_blob::get_key_image(uchar *buff,uint length, imagetype type_arg)
   get_ptr(&blob);
   if (type_arg == itHASH)
   {
+    DBUG_ASSERT(this->table->in_use);
+    uchar *ptr;
+    if (!(ptr= (uchar *)alloc_root(this->table->in_use->mem_root,
+                                  blob_length)))
+      return 0;
+    memcpy(ptr, blob, blob_length);
     int4store(buff, blob_length);
     buff+=4;
-    memcpy(buff, ptr+packlength, sizeof(char*));
+    memcpy(buff,(uchar *)&ptr, sizeof(uchar*));
     return HA_HASH_KEY_PART_LENGTH;
   }
   uint local_char_length= length / field_charset->mbmaxlen;
@@ -8250,15 +8266,12 @@ Field *Field_blob::new_key_field(MEM_ROOT *root, TABLE *new_table,
 
   if (is_hash_key_part)
   {
-    Field_blob *res;
-    if ((res= (Field_blob*) Field::new_key_field(root, new_table,
-                                                      new_ptr, length,
-                                                      new_null_ptr, new_null_bit)))
-    {
-      res->set_packlength(4);
-      res->init(new_table);
-      res->flags|= BLOB_FLAG;
-    }
+    Field_blob *res= new(root) Field_blob(new_ptr, new_null_ptr, new_null_bit, Field::NONE,
+                                          this->field_name, table->s, 4, field_charset);
+    table->s->blob_fields--;
+    res->field_index= this->field_index;
+    res->init(new_table);
+    res->flags|= BLOB_FLAG;
     return res;
   }
   Field_varstring *res= new (root) Field_varstring(new_ptr, length, 2,

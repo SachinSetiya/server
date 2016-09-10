@@ -8214,7 +8214,8 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
     fld[i]= temp_key_part->field->new_key_field(thd->mem_root, table,
                                                 key_buff + maybe_null, 12,
                                                 maybe_null?key_buff:0, 1,
-                                                true);
+                                                temp_key_part->key_part_flag
+                                                & HA_HASH_KEY_PART_FLAG);
     if (fld[i]->is_real_null())
     {
       is_null= true;

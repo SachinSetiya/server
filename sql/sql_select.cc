@@ -9031,7 +9031,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
         j->ref.null_rejecting|= (key_part_map)1 << i;
       keyuse_uses_no_tables= keyuse_uses_no_tables && !keyuse->used_tables;
       is_hash_key_part= keyinfo->key_part[keyuse->keypart].key_part_flag &
-                                                            HA_UNIQUE_HASH;
+                                                     HA_HASH_KEY_PART_FLAG;
       if (is_hash_key_part)
         DBUG_ASSERT(keyinfo->flags & HA_UNIQUE_HASH);
       /*

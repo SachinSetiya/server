@@ -14521,6 +14521,11 @@ print_key(KEY_PART *key_part, const uchar *key, uint used_length)
       key++;					// Skip null byte
       store_length--;
     }
+    if (key_part->image_type == Field::itHASH)
+    {
+      fwrite("HASH KEY",sizeof(char),strlen("HASH KEY"),DBUG_FILE);
+      continue;
+    }
     field->set_key_image(key, key_part->length);
     if (field->type() == MYSQL_TYPE_BIT)
       (void) field->val_int_as_str(&tmp, 1);
