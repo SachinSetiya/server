@@ -3187,6 +3187,86 @@ static void check_duplicate_key(THD *thd,
 }
 
 
+/**
+  Add hidden level 3 hash field to table in case of long
+  unique column
+  @param  thd           Thread Context.
+  @param  create_list   List of table fields.
+  @param  cs            Field Charset
+  @param  key_info      Whole Keys buffer
+  @param  key_index     Index of current key
+*/
+
+static void add_hash_field(THD * thd, List<Create_field> *create_list,
+                           CHARSET_INFO *cs, KEY *key_info, int key_index)
+{
+  List_iterator<Create_field> it(*create_list);
+  Create_field *dup_field, *sql_field;
+  Create_field *cf= new (thd->mem_root) Create_field();
+  cf->flags|= UNSIGNED_FLAG;
+  cf->length= cf->char_length= HA_HASH_FIELD_LENGTH;
+  cf->charset= cs;
+  cf->decimals= 0;
+  uint num= 1;
+  char *temp_name= (char *)thd->alloc(30);
+  my_snprintf(temp_name, 30, "DB_ROW_HASH_%u", num);
+  /*
+    Check for collusions
+   */
+  while ((dup_field= it++))
+  {
+    if (!my_strcasecmp(system_charset_info, temp_name, dup_field->field_name))
+    {
+      num++;
+      my_snprintf(temp_name, 30, "DB_ROW_HASH_%u", num);
+      it.rewind();
+    }
+  }
+  it.rewind();
+  cf->field_name= temp_name;
+  cf->sql_type= MYSQL_TYPE_LONGLONG;
+  /* hash column should be fully hidden */
+  cf->field_visibility= COMPLETELY_HIDDEN;
+  cf->is_long_column_hash= true;
+  cf->create_length_to_internal_length();
+  cf->length= cf->char_length= cf->pack_length;
+  prepare_create_field(cf, NULL, 0);
+  create_list->push_front(cf,thd->mem_root);
+  /*
+    We have added db_row_hash field in starting of
+    fields array , So we have to change key_part
+    field index
+   */
+  for (uint i= 0; i <= key_index; i++, key_info++)
+  {
+    KEY_PART_INFO *info= key_info->key_part;
+    for (uint j= 0; j <  key_info->user_defined_key_parts; j++, info++)
+    {
+      info->fieldnr+= 1;
+      info->offset+= HA_HASH_FIELD_LENGTH;
+    }
+  }
+  key_info[-1].flags|= HA_NOSAME;
+  it.rewind();
+  uint record_offset= 0;
+  while ((sql_field= it++))
+  {
+    sql_field->offset= record_offset;
+    if (sql_field->stored_in_db())
+      record_offset+= sql_field->pack_length;
+  }
+  it.rewind();
+  while ((sql_field= it++))
+  {
+    if (!sql_field->stored_in_db())
+    {
+      sql_field->offset= record_offset;
+      record_offset+= sql_field->pack_length;
+    }
+  }
+}
+
+
 /*
   Preparation for table creation
 
@@ -3232,6 +3312,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
   uint total_uneven_bit_length= 0;
   int select_field_count= C_CREATE_SELECT(create_table_mode);
   bool tmp_table= create_table_mode == C_ALTER_TABLE;
+  bool is_hash_field_added= false;
   DBUG_ENTER("mysql_prepare_create_table");
 
   select_field_pos= alter_info->create_list.elements - select_field_count;
@@ -3284,6 +3365,13 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
       thd->change_item_tree(&sql_field->default_value->expr_item, item);
     }
 
+    if (sql_field->field_visibility == USER_DEFINED_HIDDEN &&
+        sql_field->flags & NOT_NULL_FLAG &&
+        sql_field->flags & NO_DEFAULT_VALUE_FLAG)
+    {
+      my_error(ER_HIDDEN_NOT_NULL_WITHOUT_DEFAULT, MYF(0), sql_field->field_name);
+      DBUG_RETURN(TRUE);
+    }
     if (sql_field->sql_type == MYSQL_TYPE_SET ||
         sql_field->sql_type == MYSQL_TYPE_ENUM)
     {
@@ -3546,7 +3634,9 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     if (sql_field->stored_in_db())
       record_offset+= sql_field->pack_length;
   }
-  /* Update virtual fields' offset*/
+  /* Update virtual fields' offset and give error if
+     All fields are hidden */
+  bool is_all_hidden= true;
   it.rewind();
   while ((sql_field=it++))
   {
@@ -3555,6 +3645,13 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
       sql_field->offset= record_offset;
       record_offset+= sql_field->pack_length;
     }
+    if (sql_field->field_visibility == NOT_HIDDEN)
+      is_all_hidden= false;
+  }
+  if (is_all_hidden)
+  { //todo correct add error
+    my_error(ER_TABLE_MUST_HAVE_COLUMNS, MYF(0));
+    DBUG_RETURN(TRUE);
   }
   if (auto_increment > 1)
   {
@@ -3691,6 +3788,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     uint key_length=0;
     Key_part_spec *column;
 
+    is_hash_field_added= false;
     if (key->name.str == ignore_key)
     {
       /* ignore redundant keys */
@@ -3832,6 +3930,8 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	}
       }
       cols2.rewind();
+      key_part_info->fieldnr= field;
+      key_part_info->offset=  (uint16) sql_field->offset;
       if (key->type == Key::FULLTEXT)
       {
 	if ((sql_field->sql_type != MYSQL_TYPE_STRING &&
@@ -3886,8 +3986,19 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
             column->length= MAX_LEN_GEOM_POINT_FIELD;
 	  if (!column->length)
 	  {
+            if (key->type == Key::PRIMARY)
+            {
 	    my_error(ER_BLOB_KEY_WITHOUT_LENGTH, MYF(0), column->field_name.str);
 	    DBUG_RETURN(TRUE);
+            }
+            else if (!is_hash_field_added)
+            {
+              add_hash_field(thd, &alter_info->create_list,
+                             create_info->default_table_charset,
+                             *key_info_buffer, key_number);
+              column->length= 0;
+              is_hash_field_added= true;
+            }
 	  }
 	}
 #ifdef HAVE_SPATIAL
@@ -3946,8 +4057,6 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	}
       }
 
-      key_part_info->fieldnr= field;
-      key_part_info->offset=  (uint16) sql_field->offset;
       key_part_info->key_type=sql_field->pack_flag;
       uint key_part_length= sql_field->key_length;
 
@@ -3961,9 +4070,9 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	  if (key_part_length > max_key_length ||
 	      key_part_length > file->max_key_part_length())
 	  {
-	    key_part_length= MY_MIN(max_key_length, file->max_key_part_length());
 	    if (key->type == Key::MULTIPLE)
 	    {
+        key_part_length= MY_MIN(max_key_length, file->max_key_part_length());
 	      /* not a critical problem */
 	      push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
                                   ER_TOO_LONG_KEY,
@@ -3974,8 +4083,13 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	    }
 	    else
 	    {
-	      my_error(ER_TOO_LONG_KEY, MYF(0), key_part_length);
-	      DBUG_RETURN(TRUE);
+        if (!is_hash_field_added)
+        {
+          add_hash_field(thd, &alter_info->create_list,
+                         create_info->default_table_charset,
+                         *key_info_buffer, key_number);
+          is_hash_field_added= true;
+        }
 	    }
 	  }
 	}
@@ -4009,9 +4123,9 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
       if (key_part_length > file->max_key_part_length() &&
           key->type != Key::FULLTEXT)
       {
-        key_part_length= file->max_key_part_length();
 	if (key->type == Key::MULTIPLE)
 	{
+    key_part_length= file->max_key_part_length();
 	  /* not a critical problem */
 	  push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
                               ER_TOO_LONG_KEY, ER_THD(thd, ER_TOO_LONG_KEY),
@@ -4021,11 +4135,30 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	}
 	else
 	{
+         if(key->type == Key::UNIQUE)
+         {
+           if (!is_hash_field_added)
+           {
+              add_hash_field(thd, &alter_info->create_list,
+                       create_info->default_table_charset,
+                       *key_info_buffer, key_number);
+              is_hash_field_added= true;
+           }
+        }
+        else
+        {
+          key_part_length= file->max_key_part_length();
 	  my_error(ER_TOO_LONG_KEY, MYF(0), key_part_length);
 	  DBUG_RETURN(TRUE);
+         }
 	}
       }
-      key_part_info->length= (uint16) key_part_length;
+      /* We can not store key_part_length more then 2^16 - 1 in frm
+         So we will simply make it zero */
+      if (is_hash_field_added && key_part_length != (uint16) key_part_length)
+        key_part_info->length= 0;
+      else
+        key_part_info->length= (uint16) key_part_length;
       /* Use packed keys for long strings on the first column */
       if (!((*db_options) & HA_OPTION_NO_PACK_KEYS) &&
           !((create_info->table_options & HA_OPTION_NO_PACK_KEYS)) &&
@@ -4079,13 +4212,36 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     }
     if (key->type == Key::UNIQUE && !(key_info->flags & HA_NULL_PART_KEY))
       unique_key=1;
-    key_info->key_length=(uint16) key_length;
-    if (key_length > max_key_length && key->type != Key::FULLTEXT)
+    if (is_hash_field_added)
+      /*
+        In init_from_binary_frm_image we need differentiate
+        between normal key and long unique key. We can simply
+        increase the length of key by say 10 which is
+        more then max key length and in init_from_binary_frm
+        image we can check for this
+        */
+      key_info->key_length= file->max_key_length() + 10;//10 is random
+    else
+      key_info->key_length=(uint16) key_length;
+    if (key_length > max_key_length && key->type != Key::FULLTEXT
+         && !is_hash_field_added)
     {
       my_error(ER_TOO_LONG_KEY,MYF(0),max_key_length);
       DBUG_RETURN(TRUE);
     }
 
+    if (is_hash_field_added)
+    {
+      if (key_info->flags & HA_NULL_PART_KEY)
+         null_fields++;
+      else
+      {
+        static_cast<Create_field *>(alter_info->create_list.head())->flags|=
+            NOT_NULL_FLAG;
+        static_cast<Create_field *>(alter_info->create_list.head())->pack_flag&=
+            ~FIELDFLAG_MAYBE_NULL;
+      }
+    }
     if (validate_comment_length(thd, &key->key_create_info.comment,
                                 INDEX_COMMENT_MAXLEN, ER_TOO_LONG_INDEX_COMMENT,
                                 key_info->name))
@@ -7502,6 +7658,11 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
   */
   for (f_ptr=table->field ; (field= *f_ptr) ; f_ptr++)
   {
+    if (field->field_visibility == COMPLETELY_HIDDEN)
+    {
+      alter_info->flags |= Alter_info::ALTER_ADD_CHECK_CONSTRAINT;
+      continue;
+    }
     Alter_drop *drop;
     if (field->type() == MYSQL_TYPE_VARCHAR)
       create_info->varchar= TRUE;
@@ -7709,6 +7870,8 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
 	  }
 	}
       }  
+      if (key_info->flags & HA_UNIQUE_HASH)
+        alter_info->flags |= Alter_info::ALTER_DROP_COLUMN;
       drop_it.remove();
       continue;
     }
@@ -7716,6 +7879,11 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     KEY_PART_INFO *key_part= key_info->key_part;
     key_parts.empty();
     bool delete_index_stat= FALSE;
+    if (key_info->flags & HA_UNIQUE_HASH)
+    {
+      alter_info->flags |= Alter_info::ALTER_DROP_COLUMN;
+      alter_info->flags |= Alter_info::ALTER_ADD_COLUMN;
+    }
     for (uint j=0 ; j < key_info->user_defined_key_parts ; j++,key_part++)
     {
       if (!key_part->field)
@@ -7825,6 +7993,8 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
         else
           key_type= Key::UNIQUE;
       }
+      else if (key_info->flags & HA_UNIQUE_HASH)
+        key_type= Key::UNIQUE;
       else if (key_info->flags & HA_FULLTEXT)
         key_type= Key::FULLTEXT;
       else
@@ -7844,6 +8014,77 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       if (key->type == Key::FOREIGN_KEY &&
           ((Foreign_key *)key)->validate(new_create_list))
         goto err;
+      if (key->type == Key::UNIQUE)
+      {
+        List_iterator_fast<Key_part_spec> li(key->columns);
+        Key_part_spec *column;
+        uint total_length= 0;
+        Field **f, *field;
+        Create_field *cf;
+        bool is_hash_key= false;
+        while ((column= li++))
+        {
+          if (column->length > table->file->max_key_part_length())
+          {
+            is_hash_key= true;
+            break;
+          }
+          else if (!column->length)
+          {
+            for (f= table->field; f && (field= *f); f++)
+            {
+              if (!my_strcasecmp(system_charset_info, field->field_name,
+                                column->field_name.str))
+              {
+                if (field->max_display_length() > table->file->max_key_part_length())
+                {
+                  is_hash_key= true;
+                  goto exit;
+                }
+                total_length+= field->max_display_length();
+              }
+            }
+            /*
+              Suppose query is like
+                alter table t1 add column a blob unique;
+                alter table t2 add column a blob,add column c blob, add unique key(a,b);
+              In this case we have to add ALTER_ADD_CHECK_CONSTRAINT_FLAG
+              We cant simply add ALTER_ADD_CHECK_CONSTRAINT flag because it is expensive.
+              And there is no other way of doing this type of check.
+             */
+            field_it.rewind();
+            while((cf= field_it++))
+            {
+              if (!my_strcasecmp(system_charset_info, cf->field_name,
+                                 column->field_name.str))
+              {
+                if (cf->sql_type == MYSQL_TYPE_TINY_BLOB ||
+                    cf->sql_type == MYSQL_TYPE_MEDIUM_BLOB ||
+                    cf->sql_type == MYSQL_TYPE_LONG_BLOB ||
+                    cf->sql_type == MYSQL_TYPE_BLOB)
+                {
+                  is_hash_key= true;
+                  break;
+                }
+                if ((cf->sql_type == MYSQL_TYPE_VARCHAR ||
+                     cf->sql_type == MYSQL_TYPE_VAR_STRING) &&
+                    cf->length > table->file->max_key_part_length())
+                {
+                  is_hash_key= true;
+                  break;
+                }
+                total_length+= cf->length;
+              }
+            }
+          }
+        }
+        exit:
+        if (is_hash_key || total_length > table->file->max_key_length())
+        {
+          alter_info->flags |= Alter_info::ALTER_ADD_CHECK_CONSTRAINT;
+          alter_info->flags |= Alter_info::ALTER_ADD_COLUMN;
+        }
+      }
       new_key_list.push_back(key, thd->mem_root);
       if (key->name.str &&
 	  !my_strcasecmp(system_charset_info, key->name.str, primary_key_name))
@@ -8254,6 +8495,72 @@ static bool fk_prepare_copy_alter_table(THD *thd, TABLE *table,
   DBUG_RETURN(false);
 }
 
+/**
+  Rename temporary table and/or turn indexes on/off without touching .FRM.
+  Its a variant of simple_rename_or_index_change() to be used exclusively
+  for temporary tables.
+
+  @param thd            Thread handler
+  @param table_list     TABLE_LIST for the table to change
+  @param keys_onoff     ENABLE or DISABLE KEYS?
+  @param alter_ctx      ALTER TABLE runtime context.
+
+  @return Operation status
+    @retval false           Success
+    @retval true            Failure
+*/
+static bool
+simple_tmp_rename_or_index_change(THD *thd, TABLE_LIST *table_list,
+                                  Alter_info::enum_enable_or_disable keys_onoff,
+                                  Alter_table_ctx *alter_ctx)
+{
+  DBUG_ENTER("simple_tmp_rename_or_index_change");
+
+  TABLE *table= table_list->table;
+  bool error= false;
+
+  DBUG_ASSERT(table->s->tmp_table);
+
+  if (keys_onoff != Alter_info::LEAVE_AS_IS)
+  {
+    THD_STAGE_INFO(thd, stage_manage_keys);
+    error= alter_table_manage_keys(table, table->file->indexes_are_disabled(),
+                                   keys_onoff);
+  }
+
+  if (!error && alter_ctx->is_table_renamed())
+  {
+    THD_STAGE_INFO(thd, stage_rename);
+
+    /*
+      If THD::rename_temporary_table() fails, there is no need to rename it
+      back to the original name (unlike the case for non-temporary tables),
+      as it was an allocation error and the table was not renamed.
+    */
+    error= thd->rename_temporary_table(table, alter_ctx->new_db,
+                                       alter_ctx->new_alias);
+  }
+
+  if (!error)
+  {
+    int res= 0;
+    /*
+      We do not replicate alter table statement on temporary tables under
+      ROW-based replication.
+    */
+    if (!thd->is_current_stmt_binlog_format_row())
+    {
+      res= write_bin_log(thd, true, thd->query(), thd->query_length());
+    }
+    if (res != 0)
+      error= true;
+    else
+      my_ok(thd);
+  }
+
+  DBUG_RETURN(error);
+}
+
 
 /**
   Rename table and/or turn indexes on/off without touching .FRM
@@ -8290,6 +8597,7 @@ simple_rename_or_index_change(THD *thd, TABLE_LIST *table_list,
     if (lock_tables(thd, table_list, alter_ctx->tables_opened, 0))
       DBUG_RETURN(true);
 
+    THD_STAGE_INFO(thd, stage_manage_keys);
     error= alter_table_manage_keys(table,
                                    table->file->indexes_are_disabled(),
                                    keys_onoff);
@@ -8668,29 +8976,48 @@ bool mysql_alter_table(THD *thd,char *new_db, char *new_name,
                 thd->get_stmt_da()->current_statement_warn_count());
     my_ok(thd, 0L, 0L, alter_ctx.tmp_name);
 
-    if (write_bin_log(thd, true, thd->query(), thd->query_length()))
-      DBUG_RETURN(true);
+    /* We don't replicate alter table statement on temporary tables */
+    if (table->s->tmp_table == NO_TMP_TABLE ||
+        !thd->is_current_stmt_binlog_format_row())
+    {
+      if (write_bin_log(thd, true, thd->query(), thd->query_length()))
+        DBUG_RETURN(true);
+    }
 
     DBUG_RETURN(false);
   }
 
+  /*
+     Test if we are only doing RENAME or KEYS ON/OFF. This works
+     as we are testing if flags == 0 above.
+  */
   if (!(alter_info->flags & ~(Alter_info::ALTER_RENAME |
                               Alter_info::ALTER_KEYS_ONOFF)) &&
       alter_info->requested_algorithm !=
-      Alter_info::ALTER_TABLE_ALGORITHM_COPY &&
-      !table->s->tmp_table) // no need to touch frm
+      Alter_info::ALTER_TABLE_ALGORITHM_COPY)   // No need to touch frm.
   {
-    // This requires X-lock, no other lock levels supported.
-    if (alter_info->requested_lock != Alter_info::ALTER_TABLE_LOCK_DEFAULT &&
-        alter_info->requested_lock != Alter_info::ALTER_TABLE_LOCK_EXCLUSIVE)
+    bool res;
+
+    if (!table->s->tmp_table)
     {
-      my_error(ER_ALTER_OPERATION_NOT_SUPPORTED, MYF(0),
-               "LOCK=NONE/SHARED", "LOCK=EXCLUSIVE");
-      DBUG_RETURN(true);
+      // This requires X-lock, no other lock levels supported.
+      if (alter_info->requested_lock != Alter_info::ALTER_TABLE_LOCK_DEFAULT &&
+          alter_info->requested_lock != Alter_info::ALTER_TABLE_LOCK_EXCLUSIVE)
+      {
+        my_error(ER_ALTER_OPERATION_NOT_SUPPORTED, MYF(0),
+                 "LOCK=NONE/SHARED", "LOCK=EXCLUSIVE");
+        DBUG_RETURN(true);
+      }
+      res= simple_rename_or_index_change(thd, table_list,
+                                         alter_info->keys_onoff,
+                                         &alter_ctx);
     }
-    bool res= simple_rename_or_index_change(thd, table_list,
-                                            alter_info->keys_onoff,
-                                            &alter_ctx);
+    else
+    {
+      res= simple_tmp_rename_or_index_change(thd, table_list,
+                                             alter_info->keys_onoff,
+                                             &alter_ctx);
+    }
     DBUG_RETURN(res);
   }
 
@@ -9421,6 +9748,9 @@ err_new_table_cleanup:
 
 err_with_mdl_after_alter:
   /* the table was altered. binlog the operation */
+  DBUG_ASSERT(!(mysql_bin_log.is_open() &&
+                thd->is_current_stmt_binlog_format_row() &&
+                (create_info->tmp_table())));
   write_bin_log(thd, true, thd->query(), thd->query_length());
 
 err_with_mdl:
@@ -9737,7 +10067,7 @@ copy_data_between_tables(THD *thd, TABLE *from, TABLE *to,
   THD_STAGE_INFO(thd, stage_enabling_keys);
   thd_progress_next_stage(thd);
 
-  if (error > 0)
+  if (error > 0 && !from->s->tmp_table)
   {
     /* We are going to drop the temporary table */
     to->file->extra(HA_EXTRA_PREPARE_FOR_DROP);
@@ -9766,7 +10096,8 @@ copy_data_between_tables(THD *thd, TABLE *from, TABLE *to,
   to->file->ha_release_auto_increment();
   if (to->file->ha_external_lock(thd,F_UNLCK))
     error=1;
-  if (error < 0 && to->file->extra(HA_EXTRA_PREPARE_FOR_RENAME))
+  if (error < 0 && !from->s->tmp_table &&
+      to->file->extra(HA_EXTRA_PREPARE_FOR_RENAME))
     error= 1;
   thd_progress_end(thd);
   DBUG_RETURN(error > 0 ? -1 : 0);

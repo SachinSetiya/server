@@ -41,6 +41,7 @@
 #include "mdl.h"                 // MDL_wait_for_graph_visitor
 #include "sql_view.h"
 #include "rpl_filter.h"
+#include "sql_show.h"
 
 /* For MySQL 5.7 virtual fields */
 #define MYSQL57_GENERATED_FIELD 128
@@ -685,7 +686,8 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
                              uint keys, KEY *keyinfo,
                              uint new_frm_ver, uint &ext_key_parts,
                              TABLE_SHARE *share, uint len,
-                             KEY *first_keyinfo, char* &keynames)
+                             KEY *first_keyinfo, char* &keynames,
+                             handler *file)
 {
   uint i, j, n_length;
   KEY_PART_INFO *key_part= NULL;
@@ -741,8 +743,14 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
 
     if (i == 0)
     {
-      ext_key_parts+= (share->use_ext_keys ? first_keyinfo->user_defined_key_parts*(keys-1) : 0); 
-      n_length=keys * sizeof(KEY) + ext_key_parts * sizeof(KEY_PART_INFO);
+      ext_key_parts+= (share->use_ext_keys ? first_keyinfo->user_defined_key_parts*(keys-1) : 0);
+      /*
+        Some keys can be HA_UNIQUE_HASH , but we do not know at this point ,
+        how many ?, but will always be less than or equal to total num of
+        keys. Each HA_UNIQUE_HASH key require one extra key_part in which
+        it stored hash. On safe side we will allocate memory for each key.
+       */
+      n_length=keys * sizeof(KEY) + (ext_key_parts +keys) * sizeof(KEY_PART_INFO);
       if (!(keyinfo= (KEY*) alloc_root(&share->mem_root,
 				       n_length + len)))
         return 1;
@@ -794,6 +802,15 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
       key_part->store_length=key_part->length;
     }
 
+    if (keyinfo->key_length > file->max_key_length() &&
+         !(keyinfo->flags & HA_FULLTEXT))
+    {
+      keyinfo->flags|= HA_UNIQUE_HASH | HA_NOSAME;
+      keyinfo->key_length= 0;
+      share->extra_hash_parts++;
+      // This empty key_part for storing Hash
+      key_part++;
+    }
     /*
       Add primary key to end of extended keys for non unique keys for
       storage engines that supports it.
@@ -983,12 +1000,14 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   uint com_length, null_bit_pos, mysql57_vcol_null_bit_pos, bitmap_count;
   uint extra_rec_buf_length;
   uint i;
+  uint field_additional_property_length= 0;
   bool use_hash, mysql57_null_bits= 0;
   char *keynames, *names, *comment_pos;
   const uchar *forminfo, *extra2;
   const uchar *frm_image_end = frm_image + frm_length;
   uchar *record, *null_flags, *null_pos, *mysql57_vcol_null_pos;
   const uchar *disk_buff, *strpos;
+  const uchar * field_properties=NULL;
   ulong pos, record_offset; 
   ulong rec_buff_length;
   handler *handler_file= 0;
@@ -1101,6 +1120,10 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         }
 #endif /*HAVE_SPATIAL*/
         break;
+      case EXTRA2_FIELD_FLAGS:
+         field_properties = extra2;
+         field_additional_property_length= length;
+        break;
       default:
         /* abort frm parsing if it's an unknown but important extra2 value */
         if (type >= EXTRA2_ENGINE_IMPORTANT)
@@ -1141,6 +1164,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   share->db_options_in_use= share->db_create_options;
   share->mysql_version= uint4korr(frm_image+51);
   share->null_field_first= 0;
+  share->extra_hash_parts= 0;
   if (!frm_image[32])				// New frm file in 3.23
   {
     uint cs_org= (((uint) frm_image[41]) << 8) + (uint) frm_image[38];
@@ -1294,10 +1318,16 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     }
 
     share->set_use_ext_keys_flag(plugin_hton(se_plugin)->flags & HTON_SUPPORTS_EXTENDED_KEYS);
+    /* Allocate handler */
+    if (!(handler_file= get_new_handler(share, thd->mem_root,
+                                        plugin_hton(se_plugin))))
+      goto err;
 
+    if (handler_file->set_ha_share_ref(&share->ha_share))
+      goto err;
     if (create_key_infos(disk_buff + 6, frm_image_end, keys, keyinfo,
                          new_frm_ver, ext_key_parts,
-                         share, len, &first_keyinfo, keynames))
+                         share, len, &first_keyinfo, keynames, handler_file))
       goto err;
 
     if (next_chunk + 5 < buff_end)
@@ -1388,9 +1418,16 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   }
   else
   {
+    /* Allocate handler */
+    if (!(handler_file= get_new_handler(share, thd->mem_root,
+                                        plugin_hton(se_plugin))))
+      goto err;
+
+    if (handler_file->set_ha_share_ref(&share->ha_share))
+      goto err;
     if (create_key_infos(disk_buff + 6, frm_image_end, keys, keyinfo,
                          new_frm_ver, ext_key_parts,
-                         share, len, &first_keyinfo, keynames))
+                         share, len, &first_keyinfo, keynames, handler_file))
       goto err;
   }
 
@@ -1411,6 +1448,8 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   disk_buff= frm_image + pos + FRM_FORMINFO_SIZE;
 
   share->fields= uint2korr(forminfo+258);
+  if (field_properties && field_additional_property_length != share->fields)
+    goto err;
   pos= uint2korr(forminfo+260);   /* Length of all screens */
   n_length= uint2korr(forminfo+268);
   interval_count= uint2korr(forminfo+270);
@@ -1496,14 +1535,6 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
   if (keynames)
     fix_type_pointers(&interval_array, &share->keynames, 1, &keynames);
-
- /* Allocate handler */
-  if (!(handler_file= get_new_handler(share, thd->mem_root,
-                                      plugin_hton(se_plugin))))
-    goto err;
-
-  if (handler_file->set_ha_share_ref(&share->ha_share))
-    goto err;
 
   record= share->default_values-1;              /* Fieldstart = 1 */
   null_bits_are_used= share->null_fields != 0;
@@ -1795,6 +1826,14 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     reg_field->field_index= i;
     reg_field->comment=comment;
     reg_field->vcol_info= vcol_info;
+    if(field_properties!=NULL)
+    {
+      uint temp= *field_properties++;
+      reg_field->is_long_column_hash= temp >> 2;
+      reg_field->field_visibility= static_cast<field_visible_type> (temp & 3);
+    }
+    if (reg_field->field_visibility == USER_DEFINED_HIDDEN)
+      status_var_increment(thd->status_var.feature_hidden_columns);
     if (field_type == MYSQL_TYPE_BIT && !f_bit_as_char(pack_flag))
     {
       null_bits_are_used= 1;
@@ -1855,6 +1894,67 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   /* Fix key->name and key_part->field */
   if (key_parts)
   {
+    keyinfo= share->key_info;
+    uint hash_field_used_no= 0;
+    KEY_PART_INFO *hash_keypart, *temp_key_part;
+    Field *hash_fld, *temp_fld;
+    for (uint i= 0; i < share->keys; i++, keyinfo++)
+    {
+       /*
+         1. We need set value in hash key_part
+         2. Set vcol_info in corresponding db_row_hash_ field
+       */
+      if (keyinfo->flags & HA_UNIQUE_HASH)
+      {
+        DBUG_ASSERT(share->field[hash_field_used_no]->is_long_column_hash);
+        hash_keypart= keyinfo->key_part + keyinfo->user_defined_key_parts;
+        hash_keypart->fieldnr= hash_field_used_no + 1;
+        hash_keypart->length= HA_HASH_KEY_LENGTH_WITHOUT_NULL;
+        hash_keypart->store_length= hash_keypart->length;
+        hash_keypart->type= HA_KEYTYPE_ULONGLONG;
+        hash_keypart->key_part_flag= 0;
+        hash_keypart->key_type= 32834;
+        hash_keypart->offset= share->null_bytes +
+                        HA_HASH_FIELD_LENGTH*(hash_field_used_no);
+        hash_fld= share->field[hash_field_used_no];
+        temp_key_part= keyinfo->key_part;
+        Virtual_column_info *v= new (&share->mem_root) Virtual_column_info();;
+        String hash_str;
+        hash_str.append(ha_hash_str.str,ha_hash_str.length);
+        hash_str.append(STRING_WITH_LEN("("));
+        for (uint j= 0; j < keyinfo->user_defined_key_parts; j++,
+                 temp_key_part++)
+        {
+          if (j)
+            hash_str.append(STRING_WITH_LEN(" , "));
+          temp_fld= share->field[temp_key_part->fieldnr-1];
+          DBUG_ASSERT(temp_fld);
+          if (!temp_key_part->length ||
+              temp_key_part->length == temp_fld->max_display_length())
+            append_identifier(thd, &hash_str, temp_fld->field_name,
+                            strlen(temp_fld->field_name));
+          else
+          {
+            hash_str.append(STRING_WITH_LEN(" LEFT("));
+            append_identifier(thd, &hash_str, temp_fld->field_name,
+                            strlen(temp_fld->field_name));
+            char temp[20];
+            my_snprintf((char *)temp, 20, ", %u )", temp_key_part->length);
+            hash_str.append((char *)temp);
+          }
+        }
+        hash_str.append(STRING_WITH_LEN(")"));
+        char * expr_str= (char *)alloc_root(&share->mem_root, hash_str.length()+1);
+        strncpy(expr_str, hash_str.ptr(), hash_str.length());
+        v->expr_str.str= expr_str;
+        v->expr_str.length= hash_str.length();
+        v->expr_item= NULL;
+        v->set_stored_in_db_flag(true);
+        hash_fld->vcol_info= v;
+        share->virtual_fields++;
+        hash_field_used_no++;
+      }
+    }
     uint add_first_key_parts= 0;
     longlong ha_option= handler_file->ha_table_flags();
     keyinfo= share->key_info;
@@ -1944,6 +2044,9 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         KEY_PART_INFO *new_key_part= (keyinfo-1)->key_part +
                                      (keyinfo-1)->ext_key_parts;
 
+        //If previous key is HA_UNIQUE_HASH then we have added extra hash key_part
+        if ((keyinfo-1)->flags & HA_UNIQUE_HASH)
+          new_key_part++;
         /* 
           Do not extend the key that contains a component
           defined over the beginning of a field.
@@ -1991,6 +2094,8 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
       key_part= keyinfo->key_part;
       uint key_parts= share->use_ext_keys ? keyinfo->ext_key_parts :
 	                                    keyinfo->user_defined_key_parts;
+      if (keyinfo->flags & HA_UNIQUE_HASH)
+        key_parts++;
       for (i=0; i < key_parts; key_part++, i++)
       {
         Field *field;
@@ -2004,6 +2109,13 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
         field= key_part->field= share->field[key_part->fieldnr-1];
         key_part->type= field->key_type();
+        if (keyinfo->flags & HA_UNIQUE_HASH
+            &&(key_part->length > handler_file->max_key_part_length()
+             || key_part->length == 0))
+        {
+          key_part->key_part_flag= HA_HASH_KEY_PART_FLAG;
+          key_part->store_length= HA_HASH_KEY_PART_LENGTH;
+        }
         if (field->null_ptr)
         {
           key_part->null_offset=(uint) ((uchar*) field->null_ptr -
@@ -2013,9 +2125,10 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
           keyinfo->flags|=HA_NULL_PART_KEY;
           keyinfo->key_length+= HA_KEY_NULL_LENGTH;
         }
-        if (field->type() == MYSQL_TYPE_BLOB ||
+        if ((field->type() == MYSQL_TYPE_BLOB ||
             field->real_type() == MYSQL_TYPE_VARCHAR ||
-            field->type() == MYSQL_TYPE_GEOMETRY)
+            field->type() == MYSQL_TYPE_GEOMETRY) &&
+             !(keyinfo->flags & HA_UNIQUE_HASH))
         {
           if (field->type() == MYSQL_TYPE_BLOB ||
               field->type() == MYSQL_TYPE_GEOMETRY)
@@ -2027,7 +2140,6 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         }
         if (field->type() == MYSQL_TYPE_BIT)
           key_part->key_part_flag|= HA_BIT_PART;
-
         if (i == 0 && key != primary_key)
           field->flags |= (((keyinfo->flags & HA_NOSAME) &&
                            (keyinfo->user_defined_key_parts == 1)) ?
@@ -2035,6 +2147,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         if (i == 0)
           field->key_start.set_bit(key);
         if (field->key_length() == key_part->length &&
+            //TODO remove this condition for optimizer ?
             !(field->flags & BLOB_FLAG))
         {
           if (handler_file->index_flags(key, i, 0) & HA_KEYREAD_ONLY)
@@ -2067,7 +2180,8 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
               field->part_of_sortkey= share->keys_in_use;
           }
         }
-        if (field->key_length() != key_part->length)
+        if (field->key_length() != key_part->length &&
+            !(keyinfo->flags & HA_UNIQUE_HASH))
         {
 #ifndef TO_BE_DELETED_ON_PRODUCTION
           if (field->type() == MYSQL_TYPE_NEWDECIMAL)
@@ -2109,7 +2223,8 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         if (!(key_part->key_part_flag & (HA_BLOB_PART | HA_VAR_LENGTH_PART |
                                          HA_BIT_PART)) &&
             key_part->type != HA_KEYTYPE_FLOAT &&
-            key_part->type == HA_KEYTYPE_DOUBLE)
+            key_part->type == HA_KEYTYPE_DOUBLE &&
+            !(keyinfo->flags & HA_UNIQUE_HASH))
           key_part->key_part_flag|= HA_CAN_MEMCMP;
       }
       keyinfo->usable_key_parts= usable_parts; // Filesort
@@ -2812,7 +2927,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
   uint records, i, bitmap_size, bitmap_count;
   bool error_reported= FALSE;
   uchar *record, *bitmaps;
-  Field **field_ptr;
+  Field **field_ptr, *field;
+  KEY *key_info;
   uint8 save_context_analysis_only= thd->lex->context_analysis_only;
   DBUG_ENTER("open_table_from_share");
   DBUG_PRINT("enter",("name: '%s.%s'  form: 0x%lx", share->db.str,
@@ -2826,6 +2942,7 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
   outparam->s= share;
   outparam->db_stat= db_stat;
   outparam->write_row_record= NULL;
+  outparam->dupp_hash_key= -1;
 
   if (share->incompatible_version &&
       !(ha_open_flags & (HA_OPEN_FOR_ALTER | HA_OPEN_FOR_REPAIR)))
@@ -2918,7 +3035,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
     KEY	*key_info, *key_info_end;
     KEY_PART_INFO *key_part;
     uint n_length;
-    n_length= share->keys*sizeof(KEY) + share->ext_key_parts*sizeof(KEY_PART_INFO);
+    n_length= share->keys*sizeof(KEY) + (share->ext_key_parts +
+                                       share->extra_hash_parts)*sizeof(KEY_PART_INFO);
     if (!(key_info= (KEY*) alloc_root(&outparam->mem_root, n_length)))
       goto err;
     outparam->key_info= key_info;
@@ -2926,7 +3044,7 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
 
     memcpy(key_info, share->key_info, sizeof(*key_info)*share->keys);
     memcpy(key_part, share->key_info[0].key_part, (sizeof(*key_part) *
-                                                   share->ext_key_parts));
+                                 		(share->ext_key_parts + share->extra_hash_parts)));
 
     for (key_info_end= key_info + share->keys ;
          key_info < key_info_end ;
@@ -2939,6 +3057,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
 
       key_part_end= key_part + (share->use_ext_keys ? key_info->ext_key_parts :
 			                              key_info->user_defined_key_parts) ;
+      if (key_info->flags & HA_UNIQUE_HASH)
+        key_part_end++;
       for ( ; key_part < key_part_end; key_part++)
       {
         Field *field= key_part->field= outparam->field[key_part->fieldnr - 1];
@@ -4392,6 +4512,9 @@ void TABLE::init(THD *thd, TABLE_LIST *tl)
   created= TRUE;
   cond_selectivity= 1.0;
   cond_selectivity_sampling_explain= NULL;
+  update_handler= NULL;
+  dupp_hash_key= -1;
+  check_unique_buf= NULL;
 #ifdef HAVE_REPLICATION
   /* used in RBR Triggers */
   master_had_triggers= 0;
@@ -5026,6 +5149,15 @@ int TABLE::verify_constraints(bool ignore_failure)
   return VIEW_CHECK_OK;
 }
 
+uint TABLE::total_visible_fields()
+{
+  uint fields= 0;
+  Field **f, *field;
+  for (f= this->field; (f) && (field= *f); f++)
+    if (field->field_visibility == NOT_HIDDEN)
+      fields++;
+  return fields;
+}
 
 /*
   Find table in underlying tables by mask and check that only this
@@ -7807,4 +7939,358 @@ double KEY::actual_rec_per_key(uint i)
     return 0;
   return (is_statistics_from_stat_tables ?
           read_stats->get_avg_frequency(i) : (double) rec_per_key[i]);
+}
+
+/*
+   find out the field positoin in hash_str()
+   position starts from 0
+   else return -1;
+*/
+int find_field_pos_in_hash(Item *hash_item, const  char * field_name)
+{
+  Item_func_or_sum * temp= static_cast<Item_func_or_sum *>(hash_item);
+  Item_args * t_item= static_cast<Item_args *>(temp);
+  uint arg_count= t_item->argument_count();
+  Item ** arguments= t_item->arguments();
+  Field * t_field;
+
+  for (uint j=0; j < arg_count; j++)
+  {
+    DBUG_ASSERT(arguments[j]->type() == Item::FIELD_ITEM );
+                // this one for later use left(fld_name,length)
+              //  arguments[j]->type() == Item::STRING_ITEM);
+    t_field= static_cast<Item_field *>(arguments[j])->field;
+    if (!my_strcasecmp(system_charset_info, t_field->field_name, field_name))
+      return j;
+  }
+  return -1;
+}
+
+/*
+   find total number of field in hash_str
+*/
+int fields_in_hash_str(Item * hash_item)
+{
+  Item_func_or_sum * temp= static_cast<Item_func_or_sum *>(hash_item);
+  Item_args * t_item= static_cast<Item_args *>(temp);
+  return t_item->argument_count();
+}
+
+/*
+   Returns fields ptr given by hash_str index
+   Index starts from 0
+*/
+Field * field_ptr_in_hash_str(Item *hash_item, int index)
+{
+  Item_func_or_sum * temp= static_cast<Item_func_or_sum *>(hash_item);
+  Item_args * t_item= static_cast<Item_args *>(temp);
+  return static_cast<Item_field *>(t_item->arguments()[index])->field;
+}
+
+void calc_hash_for_unique(ulong &nr1, ulong &nr2, String *str)
+{
+  CHARSET_INFO *cs;
+  uchar l[4];
+  int4store(l, str->length());
+  cs= &my_charset_bin;
+  cs->coll->hash_sort(cs, l, sizeof(l), &nr1, &nr2);
+  cs= str->charset();
+  cs->coll->hash_sort(cs, (uchar *)str->ptr(), str->length(), &nr1, &nr2);
+}
+
+//NO longer Needed
+int get_key_part_length(KEY *keyinfo, int index)
+{
+  DBUG_ASSERT(keyinfo->flags & HA_UNIQUE_HASH);
+  TABLE *tbl= keyinfo->table;
+  Item *h_item= keyinfo->key_part->field->vcol_info->expr_item;
+  Field *fld= field_ptr_in_hash_str(h_item, index);
+  if (!index)
+    return fld->pack_length()+HA_HASH_KEY_LENGTH_WITH_NULL+1;
+  return fld->pack_length()+1;
+}
+/**
+  @brief clone of current handler.
+  Creates a clone of handler used in update for
+  unique hash key.
+  @param thd            Thread Object
+  @param table          Table Object
+  @return    handler object
+*/
+handler *create_update_handler(THD *thd, TABLE *table)
+{
+  handler *update_handler= NULL;
+    for (uint i= 0; i < table->s->keys; i++)
+    {
+      if (table->key_info[i].flags & HA_UNIQUE_HASH)
+      {
+        update_handler= table->file->clone(table->s->normalized_path.str,
+                                           thd->mem_root);
+        update_handler->ha_external_lock(thd, F_RDLCK);
+        return update_handler;
+      }
+    }
+    return NULL;
+}
+
+/**
+ @brief Deletes update handler object
+ @param thd   Thread Object
+ @param table Table Object
+*/
+void delete_update_handler(THD *thd, TABLE *table)
+{
+  if (table->update_handler)
+  {
+    table->update_handler->ha_external_lock(thd, F_UNLCK);
+    table->update_handler->ha_close();
+    delete table->update_handler;
+    table->update_handler= NULL;
+  }
+}
+/**
+ @brief This function makes table object with
+        long unique keys ready for storage engine.
+        It makes key_part of HA_UNIQUE_HASH point to
+        hash key_part.
+ @param table Table object
+ */
+void setup_table_hash(TABLE *table)
+{
+  uint extra_key_part_hash= 0;
+  KEY *s_keyinfo= table->s->key_info;
+  KEY *keyinfo= table->key_info;
+  /*
+     Sometime s_keyinfo and key_info can be null. So
+     two different loop for keyinfo and s_keyinfo
+     reference test case:- main.subselect_sj2
+   */
+
+  if (keyinfo)
+  {
+    for (uint i= 0; i < table->s->keys; i++, keyinfo++)
+    {
+      if (keyinfo->flags & HA_UNIQUE_HASH)
+      {
+        keyinfo->flags&= ~(HA_NOSAME | HA_UNIQUE_HASH);
+        extra_key_part_hash+= keyinfo->ext_key_parts;
+        keyinfo->key_part= keyinfo->key_part+ keyinfo->ext_key_parts;
+        keyinfo->user_defined_key_parts= keyinfo->usable_key_parts=
+            keyinfo->ext_key_parts= 1;
+        keyinfo->key_length= HA_HASH_KEY_LENGTH_WITH_NULL;
+      }
+    }
+  }
+  table->s->key_parts-= extra_key_part_hash - table->s->extra_hash_parts;
+  if (s_keyinfo)
+  {
+    for (uint i= 0; i < table->s->keys; i++, s_keyinfo++)
+    {
+      if (s_keyinfo->flags & HA_UNIQUE_HASH)
+      {
+        s_keyinfo->flags&= ~(HA_NOSAME | HA_UNIQUE_HASH);
+        extra_key_part_hash+= s_keyinfo->ext_key_parts;
+        s_keyinfo->key_part= s_keyinfo->key_part+ s_keyinfo->ext_key_parts;
+        s_keyinfo->user_defined_key_parts= s_keyinfo->usable_key_parts=
+            s_keyinfo->ext_key_parts= 1;
+        s_keyinfo->key_length= HA_HASH_KEY_LENGTH_WITH_NULL;
+      }
+    }
+    if (!keyinfo)
+    {
+      table->s->key_parts-= extra_key_part_hash - table->s->extra_hash_parts;
+    }
+  }
+}
+
+/**
+ @brief Revert the effect of setup_table_hash
+ @param table Table Object
+ */
+void re_setup_table(TABLE *table)
+{
+  //extra key parts excluding hash , which needs to be added in keyparts
+  uint extra_key_parts_ex_hash= 0, key_length= 0;
+  uint extra_hash_parts= 0; // this var for share->extra_hash_parts
+  KEY *s_keyinfo= table->s->key_info;
+  KEY *keyinfo= table->key_info;
+  KEY_PART_INFO *temp;
+  /*
+     Sometime s_keyinfo can be null so
+     two different loop for keyinfo and s_keyinfo
+     ref test case:- main.subselect_sj2
+   */
+  if (keyinfo)
+  {
+    for (uint i= 0; i < table->s->keys; i++, keyinfo++)
+    {
+      if (keyinfo->user_defined_key_parts == 1 &&
+          keyinfo->key_part->field->is_long_column_hash)
+      {
+        keyinfo->flags|= (HA_NOSAME | HA_UNIQUE_HASH);
+        Item *h_item= keyinfo->key_part->field->vcol_info->expr_item;
+        uint hash_parts= fields_in_hash_str(h_item);
+        keyinfo->key_part= keyinfo->key_part- hash_parts;
+        keyinfo->user_defined_key_parts= keyinfo->usable_key_parts=
+            keyinfo->ext_key_parts= hash_parts;
+        /*
+         * todo good english
+           Actually extra_key_parts_ex_hash is added in share->keyparts.
+           But share->keypart already contains extra one keypart for hash
+           (setup in setup_table_hash). So that is why 1 minused.
+          */
+        extra_key_parts_ex_hash+= hash_parts - 1;
+        extra_hash_parts++;
+        for (uint i= 0; i < hash_parts; i++)
+        {
+          key_length+= keyinfo->key_part[i].length;
+        }
+        keyinfo->key_length= key_length;
+      }
+    }
+  }
+  table->s->key_parts+= extra_key_parts_ex_hash;
+  if (s_keyinfo)
+  {
+    for (uint i= 0; i < table->s->keys; i++, s_keyinfo++)
+    {
+      if (s_keyinfo->user_defined_key_parts == 1 &&
+          s_keyinfo->key_part->field->is_long_column_hash)
+      {
+        s_keyinfo->flags|= (HA_NOSAME | HA_UNIQUE_HASH);
+        extra_hash_parts++;
+        /* Sometimes it can happen, that we does not parsed hash_str.
+           Like when this function is called in ha_create. So we will
+           Use field from  table->field rather then share->field*/
+        Item *h_item= table->field[s_keyinfo->key_part->fieldnr - 1]->
+                                                   vcol_info->expr_item;
+        uint hash_parts= fields_in_hash_str(h_item);
+        s_keyinfo->key_part= s_keyinfo->key_part- hash_parts;
+        s_keyinfo->user_defined_key_parts= s_keyinfo->usable_key_parts=
+            s_keyinfo->ext_key_parts= hash_parts;
+        extra_key_parts_ex_hash+= hash_parts - 1;
+        for (uint i= 0; i < hash_parts; i++)
+        {
+          key_length+= s_keyinfo->key_part[i].length;
+        }
+        s_keyinfo->key_length= key_length;
+      }
+    }
+    if (!keyinfo)
+    {
+      table->s->key_parts+= extra_key_parts_ex_hash - extra_hash_parts;
+      table->s->extra_hash_parts= extra_hash_parts;
+    }
+  }
+}
+
+/**
+ @brief set_hash
+ @param table
+ @param key_index
+ @param key_buff
+ */
+int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
+                 uchar * rec_buff, uchar *key_buff)
+{
+  KEY *keyinfo= &table->key_info[key_index];
+  DBUG_ASSERT(keyinfo->flags & HA_UNIQUE_HASH);
+  KEY_PART_INFO *temp_key_part= table->key_info[key_index].key_part;
+  Field *fld[keyinfo->user_defined_key_parts];
+  Field *t_field;
+  uchar hash_buff[9];
+  ulong nr1= 1, nr2= 4;
+  String *str1, temp1;
+  String *str2, temp2;
+  bool is_null= false;
+  bool is_same= true;
+  bool is_index_inited= h->inited;
+  /* difference between field->ptr and start of rec_buff */
+  long diff = rec_buff- table->record[0];
+  int result= 0;
+  for (uint i=0; i < keyinfo->user_defined_key_parts; i++, temp_key_part++)
+  {
+    uint maybe_null= MY_TEST(temp_key_part->null_bit);
+    fld[i]= temp_key_part->field->new_key_field(thd->mem_root, table,
+                                                key_buff + maybe_null, 12,
+                                                maybe_null?key_buff:0, 1,
+                                                temp_key_part->key_part_flag
+                                                & HA_HASH_KEY_PART_FLAG);
+    if (fld[i]->is_real_null())
+    {
+      is_null= true;
+      break;
+    }
+    str1= fld[i]->val_str(&temp1);
+    calc_hash_for_unique(nr1, nr2, str1);
+    key_buff+= temp_key_part->store_length;
+  }
+  if (is_null && !(keyinfo->flags & HA_NULL_PART_KEY))
+    return HA_ERR_KEY_NOT_FOUND;
+  if (keyinfo->flags & HA_NULL_PART_KEY)
+  {
+    hash_buff[0]= is_null;
+    int8store(hash_buff + 1, nr1);
+  }
+  else
+    int8store(hash_buff, nr1);
+  if (!is_index_inited)
+    result= h->ha_index_init(key_index, 0);
+  if (result)
+    return result;
+
+  setup_table_hash(table);
+  result= h->ha_index_read_map(rec_buff, hash_buff, HA_WHOLE_KEY,
+                       HA_READ_KEY_EXACT);
+  re_setup_table(table);
+  if (!result)
+  {
+    for (uint i=0; i < keyinfo->user_defined_key_parts; i++)
+    {
+      t_field= keyinfo->key_part[i].field;
+      t_field->move_field(t_field->ptr+diff,
+                          t_field->null_ptr+diff, t_field->null_bit);
+    }
+    do
+    {
+      re_setup_table(table);
+      is_same= true;
+      for (uint i=0; i < keyinfo->user_defined_key_parts; i++)
+      {
+        t_field= keyinfo->key_part[i].field;
+        if (fld[i]->is_real_null() && t_field->is_real_null())
+          continue;
+        if (!fld[i]->is_real_null() && !t_field->is_real_null())
+        {
+          str1= t_field->val_str(&temp1);
+          str2= fld[i]->val_str(&temp2);
+          if (my_strcasecmp(str1->charset(), str1->c_ptr_safe(),
+                                 str2->c_ptr_safe()))
+          {
+            is_same= false;
+            break;
+          }
+        }
+        else
+        {
+          is_same= false;
+          break;
+        }
+      }
+      setup_table_hash(table);
+    }
+    while (!is_same && !(result= h->ha_index_next_same(rec_buff, hash_buff,
+                                          keyinfo->key_length)));
+    exit:
+    for (uint i=0; i < keyinfo->user_defined_key_parts; i++)
+    {
+      t_field= keyinfo->key_part[i].field;
+      t_field->move_field(t_field->ptr-diff,
+                          t_field->null_ptr-diff, t_field->null_bit);
+    }
+  }
+  if (!is_index_inited)
+    h->ha_index_end();
+  re_setup_table(table);
+  return result;
 }

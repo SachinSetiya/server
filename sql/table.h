@@ -330,6 +330,45 @@ enum enum_vcol_update_mode
   VCOL_UPDATE_ALL
 };
 
+/* Field visibility enums */
+
+enum  field_visible_type{
+	NOT_HIDDEN=0,
+	USER_DEFINED_HIDDEN,
+	// pseudo-columns (like ROWID). Can be queried explicitly in SELECT,
+	//otherwise hidden from anything
+	PSEUDO_COLUMN_HIDDEN,
+	COMPLETELY_HIDDEN
+};
+/* Add some constant related to unique long hash column like length hash string etc*/
+
+#define HA_HASH_KEY_LENGTH_WITHOUT_NULL 8
+#define HA_HASH_FIELD_LENGTH            8
+#define HA_HASH_KEY_LENGTH_WITH_NULL    9
+//TODO is this correct ? how about size of char ptr on 32/16 bit machine?
+#define HA_HASH_KEY_PART_LENGTH         4 + 8 // 4 for length , 8 for portable size of char ptr
+const LEX_CSTRING ha_hash_str           {STRING_WITH_LEN("HASH")};
+
+int find_field_pos_in_hash(Item *hash_item, const char * field_name);
+
+int fields_in_hash_str(Item *hash_item);
+
+Field * field_ptr_in_hash_str(Item *hash_item, int index);
+
+int get_key_part_length(KEY *keyinfo, int index);
+
+void calc_hash_for_unique(ulong &nr1, ulong &nr2, String *str);
+
+handler *create_update_handler(THD *thd, TABLE *table);
+
+void delete_update_handler(THD *thd, TABLE *table);
+
+void setup_table_hash(TABLE *table);
+
+void re_setup_table(TABLE *table);
+
+int get_hash_key(THD *thd, TABLE *table, handler *h, uint key_index, uchar *rec_buf,
+              uchar *key_buff);
 
 /**
   Category of table found in the table share.
@@ -650,6 +689,7 @@ struct TABLE_SHARE
   uint rec_buff_length;                 /* Size of table->record[] buffer */
   uint keys, key_parts;
   uint ext_key_parts;       /* Total number of key parts in extended keys */
+  uint extra_hash_parts;    /* Total number of hash key parts*/
   uint max_key_length, max_unique_length, total_key_length;
   uint uniques;                         /* Number of UNIQUE index */
   uint null_fields;			/* number of null fields */
@@ -1031,6 +1071,17 @@ public:
   Field **field;			/* Pointer to fields */
 
   uchar *record[2];			/* Pointer to records */
+  /* record buf to resolve hash collisions for long UNIQUE constraints */
+  uchar *check_unique_buf;
+  handler *update_handler;  /* Handler used in case of update */
+  /*
+     In the case of write row for long unique we are unable of find
+     Whick key is voilated. Because we in case of duplicate hash we never reach
+     handler write_row function. So print_error will always print that
+     key 0 is voilated. We store which key is voilated in this variable
+     by default this should be initialized to -1
+   */
+  int dupp_hash_key;
   uchar *write_row_record;		/* Used as optimisation in
 					   THD::write_row */
   uchar *insert_values;                  /* used by INSERT ... UPDATE */
@@ -1310,6 +1361,7 @@ public:
   void mark_columns_used_by_check_constraints(void);
   void mark_check_constraint_columns_for_read(void);
   int verify_constraints(bool ignore_failure);
+  uint total_visible_fields();
   /**
      Check if a table has a default function either for INSERT or UPDATE-like
      operation

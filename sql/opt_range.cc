@@ -2511,7 +2511,9 @@ int SQL_SELECT::test_quick_select(THD *thd, key_map keys_to_use,
 	key_parts->field=	 key_part_info->field;
 	key_parts->null_bit=	 key_part_info->null_bit;
         key_parts->image_type =
-          (key_info->flags & HA_SPATIAL) ? Field::itMBR : Field::itRAW;
+          (key_info->flags & HA_SPATIAL) ? Field::itMBR :
+         (key_part_info->key_part_flag & HA_HASH_KEY_PART_FLAG)?
+                                          Field::itHASH : Field::itRAW;
         /* Only HA_PART_KEY_SEG is used */
         key_parts->flag=         (uint8) key_part_info->key_part_flag;
       }
@@ -7787,7 +7789,7 @@ Item_bool_func::get_mm_leaf(RANGE_OPT_PARAM *param,
 
   DBUG_ASSERT(value); // IS NULL and IS NOT NULL are handled separately
 
-  if (key_part->image_type != Field::itRAW)
+  if (key_part->image_type == Field::itMBR)
     DBUG_RETURN(0);   // e.g. SPATIAL index
 
   if (param->using_real_indexes &&
@@ -8447,6 +8449,7 @@ bool sel_trees_must_be_ored(RANGE_OPT_PARAM* param,
 static bool remove_nonrange_trees(RANGE_OPT_PARAM *param, SEL_TREE *tree)
 {
   bool res= FALSE;
+  uint total_fields;
   for (uint i=0; i < param->keys; i++)
   {
     if (tree->keys[i])
@@ -8455,6 +8458,24 @@ static bool remove_nonrange_trees(RANGE_OPT_PARAM *param, SEL_TREE *tree)
       {
         tree->keys[i]= NULL;
         tree->keys_map.clear_bit(i);
+      }
+      else if(param->table->key_info[i].flags &
+                 HA_UNIQUE_HASH)
+      {
+        total_fields= param->table->key_info[i].user_defined_key_parts;
+        SEL_ARG * tmp= tree->keys[i];
+        while (tmp)
+        {
+          total_fields--;
+          tmp= tmp->next_key_part;
+        }
+        if (total_fields)
+        {
+          tree->keys[i]= NULL;
+          tree->keys_map.clear_bit(i);
+        }
+        else
+          res= true;
       }
       else
         res= TRUE;
@@ -14499,6 +14520,11 @@ print_key(KEY_PART *key_part, const uchar *key, uint used_length)
       }
       key++;					// Skip null byte
       store_length--;
+    }
+    if (key_part->image_type == Field::itHASH)
+    {
+      fwrite("HASH KEY",sizeof(char),strlen("HASH KEY"),DBUG_FILE);
+      continue;
     }
     field->set_key_image(key, key_part->length);
     if (field->type() == MYSQL_TYPE_BIT)

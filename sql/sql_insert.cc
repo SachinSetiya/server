@@ -212,7 +212,7 @@ static int check_insert_fields(THD *thd, TABLE_LIST *table_list,
                table_list->view_db.str, table_list->view_name.str);
       DBUG_RETURN(-1);
     }
-    if (values.elements != table->s->fields)
+    if (values.elements != table->total_visible_fields())
     {
       my_error(ER_WRONG_VALUE_COUNT_ON_ROW, MYF(0), 1L);
       DBUG_RETURN(-1);
@@ -1541,8 +1541,22 @@ static int last_uniq_key(TABLE *table,uint keynr)
   if (table->file->ha_table_flags() & HA_DUPLICATE_KEY_NOT_IN_ORDER)
     return 0;
 
+  /*
+    Currently in case of long unique keys we detect voiliation of
+    these keys earlier then other keys so according to this logic
+    if we get key no 3 as voilated that means 0-2 keys are not voilated
+    but this is not true because we never checked for 0-2 keys
+    althought this should not be problem untill this function
+    this func is used before ha_update_row() the logic is this if
+    voilated key is last then we change this and directly do update rather
+    then delete+insert so if keynr is HA_UNIQUE_HASH then simple return
+    0
+   */
+  if (keynr < table->s->keys &&
+      table->key_info[keynr].flags &  HA_UNIQUE_HASH)
+    return 0;
   while (++keynr < table->s->keys)
-    if (table->key_info[keynr].flags & HA_NOSAME)
+    if (table->key_info[keynr].flags & (HA_NOSAME | HA_UNIQUE_HASH))
       return 0;
   return 1;
 }

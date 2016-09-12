@@ -638,6 +638,8 @@ close_all_tables_for_name(THD *thd, TABLE_SHARE *share,
                           ha_extra_function extra,
                           TABLE *skip_table)
 {
+  DBUG_ASSERT(!share->tmp_table);
+
   char key[MAX_DBKEY_LENGTH];
   uint key_length= share->table_cache_key.length;
   const char *db= key;
@@ -1173,6 +1175,7 @@ bool wait_while_table_is_used(THD *thd, TABLE *table,
                               enum ha_extra_function function)
 {
   DBUG_ENTER("wait_while_table_is_used");
+  DBUG_ASSERT(!table->s->tmp_table);
   DBUG_PRINT("enter", ("table: '%s'  share: 0x%lx  db_stat: %u  version: %lu",
                        table->s->table_name.str, (ulong) table->s,
                        table->db_stat, table->s->tdc->version));
@@ -5287,6 +5290,8 @@ find_field_in_table(THD *thd, TABLE *table, const char *name, uint length,
 
   if (field_ptr && *field_ptr)
   {
+    if ((*field_ptr)->field_visibility == COMPLETELY_HIDDEN)
+       DBUG_RETURN((Field*) 0);
     *cached_field_index_ptr= field_ptr - table->field;
     field= *field_ptr;
   }
@@ -7351,6 +7356,18 @@ insert_fields(THD *thd, Name_resolution_context *context, const char *db_name,
 
     for (; !field_iterator.end_of_fields(); field_iterator.next())
     {
+      /* Field can be null here
+         test case
+         create table t1 (empnum smallint, grp int);
+         create table t2 (empnum int, name char(5));
+         insert into t1 values(1,1);
+         insert into t2 values(1,'bob');
+         create view v1 as select * from t2 inner join t1 using (empnum);
+         select * from v1;
+       */
+      if ((field= field_iterator.field()) &&
+          field->field_visibility != NOT_HIDDEN)
+        continue;
       Item *item;
 
       if (!(item= field_iterator.create_item(thd)))
@@ -7986,6 +8003,34 @@ fill_record(THD *thd, TABLE *table, Field **ptr, List<Item> &values,
     only one row.
   */
   table->auto_increment_field_not_null= FALSE;
+  Field **f;
+  List_iterator<Item> i_iter(values);
+  uint field_count= 0;
+  for (f= ptr; f && (field= *f); f++)
+    field_count++;
+  if (field_count != values.elements)
+  {
+    Name_resolution_context *context= & thd->lex->select_lex.context;
+    for (f= ptr; f && (field= *f); f++)
+    {
+      if (field->field_visibility!=NOT_HIDDEN)
+      {
+        if (f == ptr)
+        {
+          values.push_front(new (thd->mem_root)
+                            Item_default_value(thd,context),thd->mem_root);
+          i_iter.rewind();
+          i_iter++;
+        }
+        else
+          i_iter.after(new (thd->mem_root) Item_default_value(thd,context));
+      }
+      else
+        i_iter++;
+    }
+    f= ptr;
+    i_iter.rewind();
+  }
   while ((field = *ptr++) && ! thd->is_error())
   {
     /* Ensure that all fields are from the same table */
@@ -8021,6 +8066,23 @@ fill_record(THD *thd, TABLE *table, Field **ptr, List<Item> &values,
                                               VCOL_UPDATE_FOR_WRITE))
     goto err;
   thd->abort_on_warning= abort_on_warning_saved;
+  /*
+     We need to remove extra added defaul value from
+     value list because consider query like
+     insert into t1 select * from t2;
+     it will only use only one value list and each time we
+     add new default it will increase size of value list.
+   */
+  if (field_count != values.elements)
+  {
+    for ( ; f && (field= *f) && i_iter++ ; f++)
+    {
+      if (field->field_visibility!=NOT_HIDDEN)
+      {
+        i_iter.remove();
+      }
+    }
+  }
   DBUG_RETURN(thd->is_error());
 
 err:

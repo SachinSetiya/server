@@ -1681,7 +1681,8 @@ String *Field::val_int_as_str(String *val_buffer, bool unsigned_val)
 Field::Field(uchar *ptr_arg,uint32 length_arg,uchar *null_ptr_arg,
 	     uchar null_bit_arg,
 	     utype unireg_check_arg, const char *field_name_arg)
-  :ptr(ptr_arg), null_ptr(null_ptr_arg), table(0), orig_table(0),
+	:ptr(ptr_arg), null_ptr(null_ptr_arg), field_visibility(NOT_HIDDEN),
+	is_long_column_hash(false),table(0), orig_table(0),
   table_name(0), field_name(field_name_arg), option_list(0),
   option_struct(0), key_start(0), part_of_key(0),
   part_of_key_not_clustered(0), part_of_sortkey(0),
@@ -2221,6 +2222,8 @@ int Field::store_time_dec(MYSQL_TIME *ltime, uint dec)
 
 bool Field::optimize_range(uint idx, uint part)
 {
+  if (table->key_info[idx].flags & HA_UNIQUE_HASH)
+    return false;        // Long unique index can not optimize range
   return MY_TEST(table->file->index_flags(idx, part, 1) & HA_READ_RANGE);
 }
 
@@ -2252,7 +2255,8 @@ Field *Field::make_new_field(MEM_ROOT *root, TABLE *new_table,
 
 Field *Field::new_key_field(MEM_ROOT *root, TABLE *new_table,
                             uchar *new_ptr, uint32 length,
-                            uchar *new_null_ptr, uint new_null_bit)
+                            uchar *new_null_ptr, uint new_null_bit,
+                            bool is_hash_key_part)
 {
   Field *tmp;
   if ((tmp= make_new_field(root, new_table, table == new_table)))
@@ -4288,16 +4292,13 @@ int Field_longlong::store(const char *from,uint len,CHARSET_INFO *cs)
 int Field_longlong::store(double nr)
 {
   ASSERT_COLUMN_MARKED_FOR_WRITE_OR_COMPUTED;
-  bool error;
-  longlong res;
+  Converter_double_to_longlong conv(nr, unsigned_flag);
 
-  res= double_to_longlong(nr, unsigned_flag, &error);
-
-  if (error)
+  if (conv.error())
     set_warning(ER_WARN_DATA_OUT_OF_RANGE, 1);
 
-  int8store(ptr,res);
-  return error;
+  int8store(ptr, conv.result());
+  return conv.error();
 }
 
 
@@ -4698,53 +4699,61 @@ int truncate_double(double *nr, uint field_length, uint dec,
 
 /*
   Convert double to longlong / ulonglong.
-  If double is outside of range, adjust return value and set error.
+  If double is outside of the supported range,
+  adjust m_result and set m_error.
 
-  SYNOPSIS
-  double_to_longlong()
-  nr	  	 Number to convert
-  unsigned_flag  1 if result is unsigned
-  error		 Will be set to 1 in case of overflow.
+  @param nr             Number to convert
+  @param unsigned_flag  true if result is unsigned
 */
 
-longlong double_to_longlong(double nr, bool unsigned_flag, bool *error)
+Value_source::
+Converter_double_to_longlong::Converter_double_to_longlong(double nr,
+                                                           bool unsigned_flag)
+  :m_error(false)
 {
-  longlong res;
-
-  *error= 0;
-
   nr= rint(nr);
   if (unsigned_flag)
   {
     if (nr < 0)
     {
-      res= 0;
-      *error= 1;
+      m_result= 0;
+      m_error= true;
     }
     else if (nr >= (double) ULONGLONG_MAX)
     {
-      res= ~(longlong) 0;
-      *error= 1;
+      m_result= ~(longlong) 0;
+      m_error= true;
     }
     else
-      res= (longlong) double2ulonglong(nr);
+      m_result= (longlong) double2ulonglong(nr);
   }
   else
   {
     if (nr <= (double) LONGLONG_MIN)
     {
-      res= LONGLONG_MIN;
-      *error= (nr < (double) LONGLONG_MIN);
+      m_result= LONGLONG_MIN;
+      m_error= (nr < (double) LONGLONG_MIN);
     }
     else if (nr >= (double) (ulonglong) LONGLONG_MAX)
     {
-      res= LONGLONG_MAX;
-      *error= (nr > (double) LONGLONG_MAX);
+      m_result= LONGLONG_MAX;
+      m_error= (nr > (double) LONGLONG_MAX);
     }
     else
-      res= (longlong) nr;
+      m_result= (longlong) nr;
   }
-  return res;
+}
+
+
+void Value_source::
+Converter_double_to_longlong::push_warning(THD *thd,
+                                           double nr,
+                                           bool unsigned_flag)
+{
+  push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
+                      ER_DATA_OVERFLOW, ER_THD(thd, ER_DATA_OVERFLOW),
+                      ErrConvDouble(nr).ptr(),
+                      unsigned_flag ? "UNSIGNED INT" : "INT");
 }
 
 
@@ -4767,27 +4776,6 @@ double Field_double::val_real(void)
   double j;
   float8get(j,ptr);
   return j;
-}
-
-longlong Field_double::val_int(void)
-{
-  ASSERT_COLUMN_MARKED_FOR_READ;
-  double j;
-  longlong res;
-  bool error;
-  float8get(j,ptr);
-
-  res= double_to_longlong(j, 0, &error);
-  if (error)
-  {
-    THD *thd= get_thd();
-    ErrConvDouble err(j);
-    push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
-                        ER_TRUNCATED_WRONG_VALUE,
-                        ER_THD(thd, ER_TRUNCATED_WRONG_VALUE), "INTEGER",
-                        err.ptr());
-  }
-  return res;
 }
 
 
@@ -5864,7 +5852,8 @@ void Field_time::set_curdays(THD *thd)
 
 Field *Field_time::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                  uchar *new_ptr, uint32 length,
-                                 uchar *new_null_ptr, uint new_null_bit)
+                                 uchar *new_null_ptr, uint new_null_bit,
+                                 bool is_hash_key_part)
 {
   THD *thd= get_thd();
   Field_time *res=
@@ -7768,6 +7757,19 @@ uint Field_varstring::get_key_image(uchar *buff, uint length,
                                 local_char_length);
   set_if_smaller(f_length, local_char_length);
   /* Key is always stored with 2 bytes */
+  if (type_arg == itHASH)
+  {
+    DBUG_ASSERT(this->table->in_use);
+    uchar *ptr;
+    if (!(ptr= (uchar *)alloc_root(this->table->in_use->mem_root,
+                                  f_length)))
+      return 0;
+    memcpy(ptr, pos, f_length);
+    int4store(buff, f_length);
+    buff+=4;;
+    memcpy(buff, (uchar *)&ptr, sizeof(char*));
+    return HA_HASH_KEY_PART_LENGTH;
+  }
   int2store(buff,f_length);
   memcpy(buff+HA_KEY_BLOB_LENGTH, pos, f_length);
   if (f_length < length)
@@ -7827,8 +7829,19 @@ Field *Field_varstring::make_new_field(MEM_ROOT *root, TABLE *new_table,
 
 Field *Field_varstring::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                       uchar *new_ptr, uint32 length,
-                                      uchar *new_null_ptr, uint new_null_bit)
+                                      uchar *new_null_ptr, uint new_null_bit,
+                                      bool is_hash_key_part)
 {
+  if (is_hash_key_part)
+  {
+    Field_blob *res= new(root) Field_blob(new_ptr, new_null_ptr, new_null_bit, Field::NONE,
+                                          this->field_name, table->s, 4, field_charset);
+    table->s->blob_fields--;
+    res->field_index= this->field_index;
+    res->init(new_table);
+    res->flags|= BLOB_FLAG;
+    return res;
+  }
   Field_varstring *res;
   if ((res= (Field_varstring*) Field::new_key_field(root, new_table,
                                                     new_ptr, length,
@@ -8182,6 +8195,19 @@ uint Field_blob::get_key_image(uchar *buff,uint length, imagetype type_arg)
 #endif /*HAVE_SPATIAL*/
 
   get_ptr(&blob);
+  if (type_arg == itHASH)
+  {
+    DBUG_ASSERT(this->table->in_use);
+    uchar *ptr;
+    if (!(ptr= (uchar *)alloc_root(this->table->in_use->mem_root,
+                                  blob_length)))
+      return 0;
+    memcpy(ptr, blob, blob_length);
+    int4store(buff, blob_length);
+    buff+=4;
+    memcpy(buff,(uchar *)&ptr, sizeof(uchar*));
+    return HA_HASH_KEY_PART_LENGTH;
+  }
   uint local_char_length= length / field_charset->mbmaxlen;
   local_char_length= my_charpos(field_charset, blob, blob + blob_length,
                           local_char_length);
@@ -8234,8 +8260,20 @@ int Field_blob::key_cmp(const uchar *a,const uchar *b)
 
 Field *Field_blob::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                  uchar *new_ptr, uint32 length,
-                                 uchar *new_null_ptr, uint new_null_bit)
+                                 uchar *new_null_ptr, uint new_null_bit,
+                                 bool is_hash_key_part)
 {
+
+  if (is_hash_key_part)
+  {
+    Field_blob *res= new(root) Field_blob(new_ptr, new_null_ptr, new_null_bit, Field::NONE,
+                                          this->field_name, table->s, 4, field_charset);
+    table->s->blob_fields--;
+    res->field_index= this->field_index;
+    res->init(new_table);
+    res->flags|= BLOB_FLAG;
+    return res;
+  }
   Field_varstring *res= new (root) Field_varstring(new_ptr, length, 2,
                                       new_null_ptr, new_null_bit, Field::NONE,
                                       field_name, table->s, charset());
@@ -9244,7 +9282,8 @@ Field_bit::do_last_null_byte() const
 
 Field *Field_bit::new_key_field(MEM_ROOT *root, TABLE *new_table,
                                 uchar *new_ptr, uint32 length, 
-                                uchar *new_null_ptr, uint new_null_bit)
+                                uchar *new_null_ptr, uint new_null_bit,
+                                bool is_hash_key_part)
 {
   Field_bit *res;
   if ((res= (Field_bit*) Field::new_key_field(root, new_table, new_ptr, length,
@@ -9439,7 +9478,7 @@ int Field_bit::key_cmp(const uchar *str, uint length)
 }
 
 
-int Field_bit::cmp_offset(uint row_offset)
+int Field_bit::cmp_offset(my_ptrdiff_t row_offset)
 {
   if (bit_len)
   {
@@ -10516,6 +10555,8 @@ Column_definition::Column_definition(THD *thd, Field *old_field,
   default_value=    old_field->default_value;
   check_constraint= old_field->check_constraint;
   option_list= old_field->option_list;
+  field_visibility= old_field->field_visibility;
+  is_long_column_hash= old_field->is_long_column_hash;
 
   switch (sql_type) {
   case MYSQL_TYPE_BLOB:

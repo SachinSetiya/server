@@ -1877,13 +1877,16 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
   */
   old_map= tmp_use_all_columns(table, table->read_set);
 
+  bool not_the_first_field= false;
   for (ptr=table->field ; (field= *ptr); ptr++)
   {
-    uint flags = field->flags;
-
-    if (ptr != table->field)
+    if (field->field_visibility == PSEUDO_COLUMN_HIDDEN ||
+        field->field_visibility == COMPLETELY_HIDDEN )
+       continue;
+    if (not_the_first_field)
       packet->append(STRING_WITH_LEN(",\n"));
-
+    not_the_first_field= true;
+    uint flags = field->flags;
     packet->append(STRING_WITH_LEN("  "));
     append_identifier(thd,packet,field->field_name, strlen(field->field_name));
     packet->append(' ');
@@ -1937,6 +1940,11 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
           all other fields they are treated as NOT NULL by default.
         */
         packet->append(STRING_WITH_LEN(" NULL"));
+      }
+
+      if (field->field_visibility == USER_DEFINED_HIDDEN)
+      {
+        packet->append(STRING_WITH_LEN(" HIDDEN"));
       }
 
       if (get_field_default_value(thd, field, &def_value, 1))
@@ -1998,7 +2006,7 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
       */
       packet->append(STRING_WITH_LEN("PRIMARY KEY"));
     }
-    else if (key_info->flags & HA_NOSAME)
+    else if (key_info->flags & HA_NOSAME || key_info->flags & HA_UNIQUE_HASH)
       packet->append(STRING_WITH_LEN("UNIQUE KEY "));
     else if (key_info->flags & HA_FULLTEXT)
       packet->append(STRING_WITH_LEN("FULLTEXT KEY "));
@@ -2023,7 +2031,7 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
       if (key_part->field &&
           (key_part->length !=
            table->field[key_part->fieldnr-1]->key_length() &&
-           !(key_info->flags & (HA_FULLTEXT | HA_SPATIAL))))
+           !(key_info->flags & (HA_FULLTEXT | HA_SPATIAL ))))
       {
         packet->append_parenthesized((long) key_part->length /
                                       key_part->field->charset()->mbmaxlen);
@@ -5411,6 +5419,9 @@ static int get_schema_column_record(THD *thd, TABLE_LIST *tables,
 
   for (; (field= *ptr) ; ptr++)
   {
+    if(field->field_visibility == COMPLETELY_HIDDEN ||
+           field->field_visibility == PSEUDO_COLUMN_HIDDEN)
+      continue;
     uchar *pos;
     char tmp[MAX_FIELD_WIDTH];
     String type(tmp,sizeof(tmp), system_charset_info);
@@ -5467,18 +5478,26 @@ static int get_schema_column_record(THD *thd, TABLE_LIST *tables,
                  (field->flags & MULTIPLE_KEY_FLAG) ? "MUL":"");
     table->field[16]->store((const char*) pos,
                             strlen((const char*) pos), cs);
-
+    StringBuffer<256> buf;
     if (field->unireg_check == Field::NEXT_NUMBER)
-      table->field[17]->store(STRING_WITH_LEN("auto_increment"), cs);
+      buf.set(STRING_WITH_LEN("auto_increment"),cs);
     if (print_on_update_clause(field, &type, true))
-      table->field[17]->store(type.ptr(), type.length(), cs);
+      buf.set(type.ptr(), type.length(),cs);
     if (field->vcol_info)
     {
       if (field->vcol_info->stored_in_db)
-        table->field[17]->store(STRING_WITH_LEN("PERSISTENT"), cs);
+        buf.set(STRING_WITH_LEN("PERSISTENT"), cs);
       else
-        table->field[17]->store(STRING_WITH_LEN("VIRTUAL"), cs);
+        buf.set(STRING_WITH_LEN("VIRTUAL"), cs);
     }
+    /*hidden can coexist with auto_increment and virtual */
+    if(field->field_visibility==USER_DEFINED_HIDDEN)
+    {
+      if (buf.length())
+        buf.append(STRING_WITH_LEN(","));
+      buf.append(STRING_WITH_LEN(" HIDDEN"),cs);
+    }
+    table->field[17]->store(buf.ptr(), buf.length(), cs);
     table->field[19]->store(field->comment.str, field->comment.length, cs);
     if (schema_table_store_record(thd, table))
       DBUG_RETURN(1);
@@ -6077,7 +6096,7 @@ static int get_schema_stat_record(THD *thd, TABLE_LIST *tables,
         table->field[1]->store(db_name->str, db_name->length, cs);
         table->field[2]->store(table_name->str, table_name->length, cs);
         table->field[3]->store((longlong) ((key_info->flags &
-                                            HA_NOSAME) ? 0 : 1), TRUE);
+                                (HA_NOSAME | HA_UNIQUE_HASH)) ? 0 : 1), TRUE);
         table->field[4]->store(db_name->str, db_name->length, cs);
         table->field[5]->store(key_info->name, strlen(key_info->name), cs);
         table->field[6]->store((longlong) (j+1), TRUE);
@@ -6101,8 +6120,13 @@ static int get_schema_stat_record(THD *thd, TABLE_LIST *tables,
             table->field[9]->store((longlong) records, TRUE);
             table->field[9]->set_notnull();
           }
-          str= show_table->file->index_type(i);
-          table->field[13]->store(str, strlen(str), cs);
+          if (key->flags & HA_UNIQUE_HASH)
+            table->field[13]->store(STRING_WITH_LEN("HASH_INDEX"), cs);
+          else
+          {
+            str= show_table->file->index_type(i);
+            table->field[13]->store(str, strlen(str), cs);
+          }
         }
         if (!(key_info->flags & HA_FULLTEXT) &&
             (key_part->field &&
@@ -6512,7 +6536,7 @@ static int get_schema_key_column_usage_record(THD *thd,
                            HA_STATUS_TIME);
     for (uint i=0 ; i < show_table->s->keys ; i++, key_info++)
     {
-      if (i != primary_key && !(key_info->flags & HA_NOSAME))
+      if (i != primary_key && !(key_info->flags & (HA_NOSAME | HA_UNIQUE_HASH)))
         continue;
       uint f_idx= 0;
       KEY_PART_INFO *key_part= key_info->key_part;

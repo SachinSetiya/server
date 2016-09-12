@@ -80,6 +80,35 @@ protected:
     Warn_filter_all() :Warn_filter(true, true) { }
   };
 
+  class Converter_double_to_longlong
+  {
+  protected:
+    bool m_error;
+    longlong m_result;
+  public:
+    Converter_double_to_longlong(double nr, bool unsigned_flag);
+    longlong result() const { return m_result; }
+    bool error() const { return m_error; }
+    void push_warning(THD *thd, double nr, bool unsigned_flag);
+  };
+  class Converter_double_to_longlong_with_warn:
+    public Converter_double_to_longlong
+  {
+  public:
+    Converter_double_to_longlong_with_warn(THD *thd, double nr,
+                                           bool unsigned_flag)
+      :Converter_double_to_longlong(nr, unsigned_flag)
+    {
+      if (m_error)
+        push_warning(thd, nr, unsigned_flag);
+    }
+    Converter_double_to_longlong_with_warn(double nr, bool unsigned_flag)
+      :Converter_double_to_longlong(nr, unsigned_flag)
+    {
+      if (m_error)
+        push_warning(current_thd, nr, unsigned_flag);
+    }
+  };
 
   // String-to-number converters
   class Converter_string_to_number
@@ -406,7 +435,6 @@ struct st_cache_field;
 int field_conv(Field *to,Field *from);
 int truncate_double(double *nr, uint field_length, uint dec,
                     bool unsigned_flag, double max_value);
-longlong double_to_longlong(double nr, bool unsigned_flag, bool *error);
 
 inline uint get_enum_pack_length(int elements)
 {
@@ -659,6 +687,9 @@ public:
      @c NOT @c NULL field, this member is @c NULL.
   */
   uchar		*null_ptr;
+  field_visible_type field_visibility;
+  /* Does this field stores the hash of long unique column */
+  bool is_long_column_hash;
   /*
     Note that you can use table->in_use as replacement for current_thd member
     only inside of val_*() and store() members (e.g. you can't use it in cons)
@@ -698,7 +729,7 @@ public:
     GEOM_MULTIPOINT = 4, GEOM_MULTILINESTRING = 5, GEOM_MULTIPOLYGON = 6,
     GEOM_GEOMETRYCOLLECTION = 7
   };
-  enum imagetype { itRAW, itMBR};
+  enum imagetype { itRAW, itMBR, itHASH};
 
   utype		unireg_check;
   uint32	field_length;		// Length of field
@@ -998,9 +1029,9 @@ public:
   virtual int cmp(const uchar *,const uchar *)=0;
   virtual int cmp_binary(const uchar *a,const uchar *b, uint32 max_length=~0L)
   { return memcmp(a,b,pack_length()); }
-  virtual int cmp_offset(uint row_offset)
+  virtual int cmp_offset(my_ptrdiff_t row_offset)
   { return cmp(ptr,ptr+row_offset); }
-  virtual int cmp_binary_offset(uint row_offset)
+  virtual int cmp_binary_offset(my_ptrdiff_t row_offset)
   { return cmp_binary(ptr, ptr+row_offset); };
   virtual int key_cmp(const uchar *a,const uchar *b)
   { return cmp(a, b); }
@@ -1147,7 +1178,8 @@ public:
                                 bool keep_type);
   virtual Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                                uchar *new_ptr, uint32 length,
-                               uchar *new_null_ptr, uint new_null_bit);
+                               uchar *new_null_ptr, uint new_null_bit,
+                               bool is_hash_key_part= false);
   Field *clone(MEM_ROOT *mem_root, TABLE *new_table);
   Field *clone(MEM_ROOT *mem_root, TABLE *new_table, my_ptrdiff_t diff,
                bool stat_flag= FALSE);
@@ -2148,7 +2180,13 @@ public:
   int  store(longlong nr, bool unsigned_val);
   int reset(void) { bzero(ptr,sizeof(double)); return 0; }
   double val_real(void);
-  longlong val_int(void);
+  longlong val_int(void)
+  {
+    Converter_double_to_longlong conv(Field_double::val_real(), false);
+    if (conv.error())
+      conv.push_warning(get_thd(), Field_double::val_real(), false);
+    return conv.result();
+  }
   String *val_str(String*,String *);
   bool send_binary(Protocol *protocol);
   int cmp(const uchar *,const uchar *);
@@ -2651,7 +2689,8 @@ public:
   void set_curdays(THD *thd);
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
-                       uchar *new_null_ptr, uint new_null_bit);
+                       uchar *new_null_ptr, uint new_null_bit,
+                       bool is_hash_key_part= false);
   Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item);
 };
 
@@ -3136,7 +3175,8 @@ public:
   Field *make_new_field(MEM_ROOT *root, TABLE *new_table, bool keep_type);
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
-                       uchar *new_null_ptr, uint new_null_bit);
+                       uchar *new_null_ptr, uint new_null_bit,
+                       bool is_hash_key_part= false);
   uint is_equal(Create_field *new_field);
   void hash(ulong *nr, ulong *nr2);
   uint length_size() { return length_bytes; }
@@ -3298,7 +3338,8 @@ public:
   void set_key_image(const uchar *buff,uint length);
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
-                       uchar *new_null_ptr, uint new_null_bit);
+                       uchar *new_null_ptr, uint new_null_bit,
+                       bool is_hash_key_part);
   void sql_type(String &str) const;
   inline bool copy()
   {
@@ -3326,6 +3367,12 @@ public:
   uint32 max_display_length();
   uint32 char_length();
   uint is_equal(Create_field *new_field);
+  void set_packlength(uint packlength)
+  {
+    DBUG_ASSERT(packlength <= 4);
+    this->packlength= packlength;
+  }
+
 private:
   int do_save_field_metadata(uchar *first_byte);
 };
@@ -3578,13 +3625,13 @@ public:
     else
       return Field_bit::key_cmp(a, bytes_in_rec + MY_TEST(bit_len)) * -1;
   }
-  int cmp_binary_offset(uint row_offset)
+  int cmp_binary_offset(my_ptrdiff_t row_offset)
   { return cmp_offset(row_offset); }
   int cmp_max(const uchar *a, const uchar *b, uint max_length);
   int key_cmp(const uchar *a, const uchar *b)
   { return cmp_binary((uchar *) a, (uchar *) b); }
   int key_cmp(const uchar *str, uint length);
-  int cmp_offset(uint row_offset);
+  int cmp_offset(my_ptrdiff_t row_offset);
   bool update_min(Field *min_val, bool force_update)
   { 
     longlong val= val_int();
@@ -3639,7 +3686,8 @@ public:
 
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
-                       uchar *new_null_ptr, uint new_null_bit);
+                       uchar *new_null_ptr, uint new_null_bit,
+                       bool is_hash_key_part= false);
   void set_bit_ptr(uchar *bit_ptr_arg, uchar bit_ofs_arg)
   {
     bit_ptr= bit_ptr_arg;
@@ -3714,6 +3762,9 @@ public:
     max number of characters. 
   */
   ulonglong length;
+  field_visible_type field_visibility;
+  /* Does this field stores the hash of long unique column */
+  bool is_long_column_hash;
   /*
     The value of `length' as set by parser: is the number of characters
     for most of the types, or of bytes for BLOBs or numeric types.
@@ -3743,6 +3794,7 @@ public:
   Column_definition():
     comment(null_lex_str),
     on_update(0), sql_type(MYSQL_TYPE_NULL),
+    field_visibility(NOT_HIDDEN), is_long_column_hash(false),
     flags(0), pack_length(0), key_length(0), unireg_check(Field::NONE),
     interval(0), srid(0), geom_type(Field::GEOM_GEOMETRY),
     option_list(NULL),

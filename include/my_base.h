@@ -257,7 +257,11 @@ enum ha_base_keytype {
 #define HA_SPATIAL		1024    /* For spatial search */
 #define HA_NULL_ARE_EQUAL	2048	/* NULL in key are cmp as equal */
 #define HA_GENERATED_KEY	8192	/* Automaticly generated key */
-
+/*
+   Some more flags for keys  these are not stored in
+   frm it is calculated on the fly in init_from_binary_frm_image
+*/
+#define HA_UNIQUE_HASH            65536
         /* The combination of the above can be used for key type comparison. */
 #define HA_KEYFLAG_MASK (HA_NOSAME | HA_PACK_KEY | HA_AUTO_KEY | \
                          HA_BINARY_PACK_KEY | HA_FULLTEXT | HA_UNIQUE_CHECK | \
@@ -302,6 +306,11 @@ enum ha_base_keytype {
 #define HA_BIT_PART		1024
 #define HA_CAN_MEMCMP           2048 /* internal, never stored in frm */
 
+/*
+  Used for key parts whole length is greater then > file->max_key_part_length
+  Only used for HA_UNIQUE_HASH keys
+*/ //TODO a better name ??
+#define HA_HASH_KEY_PART_FLAG   4096
 	/* optionbits for database */
 #define HA_OPTION_PACK_RECORD		1
 #define HA_OPTION_PACK_KEYS		2

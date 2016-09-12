@@ -6557,7 +6557,7 @@ void handle_connections_sockets()
   while (!abort_loop)
   {
 #ifdef HAVE_POLL
-    retval= poll(fds, socket_count, -1);
+      retval= poll(fds, socket_count, -1);
 #else
     readFDs=clientFDs;
     retval= select((int) 0,&readFDs,0,0,0);
@@ -8394,6 +8394,7 @@ SHOW_VAR status_vars[]= {
   {"Feature_dynamic_columns",  (char*) offsetof(STATUS_VAR, feature_dynamic_columns), SHOW_LONG_STATUS},
   {"Feature_fulltext",         (char*) offsetof(STATUS_VAR, feature_fulltext), SHOW_LONG_STATUS},
   {"Feature_gis",              (char*) offsetof(STATUS_VAR, feature_gis), SHOW_LONG_STATUS},
+  {"Feature_hidden_columns",   (char*) offsetof(STATUS_VAR, feature_hidden_columns), SHOW_LONG_STATUS},
   {"Feature_locale",           (char*) offsetof(STATUS_VAR, feature_locale), SHOW_LONG_STATUS},
   {"Feature_subquery",         (char*) offsetof(STATUS_VAR, feature_subquery), SHOW_LONG_STATUS},
   {"Feature_timezone",         (char*) offsetof(STATUS_VAR, feature_timezone), SHOW_LONG_STATUS},
