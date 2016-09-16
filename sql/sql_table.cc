@@ -3247,6 +3247,7 @@ static void add_hash_field(THD * thd, List<Create_field> *create_list,
     }
   }
   key_info[-1].flags|= HA_NOSAME;
+  key_info[-1].algorithm= HA_KEY_ALG_LONG_HASH;
   it.rewind();
   uint record_offset= 0;
   while ((sql_field= it++))
@@ -4212,16 +4213,16 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
     }
     if (key->type == Key::UNIQUE && !(key_info->flags & HA_NULL_PART_KEY))
       unique_key=1;
-    if (is_hash_field_added)
-      /*
-        In init_from_binary_frm_image we need differentiate
-        between normal key and long unique key. We can simply
-        increase the length of key by say 10 which is
-        more then max key length and in init_from_binary_frm
-        image we can check for this
-        */
-      key_info->key_length= file->max_key_length() + 10;//10 is random
-    else
+//    if (is_hash_field_added)
+//      /*
+//        In init_from_binary_frm_image we need differentiate
+//        between normal key and long unique key. We can simply
+//        increase the length of key by say 10 which is
+//        more then max key length and in init_from_binary_frm
+//        image we can check for this
+//        */
+//      key_info->key_length= file->max_key_length() + 10;//10 is random
+//    else
       key_info->key_length=(uint16) key_length;
     if (key_length > max_key_length && key->type != Key::FULLTEXT
          && !is_hash_field_added)

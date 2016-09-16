@@ -802,8 +802,7 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
       key_part->store_length=key_part->length;
     }
 
-    if (keyinfo->key_length > file->max_key_length() &&
-         !(keyinfo->flags & HA_FULLTEXT))
+    if (keyinfo->algorithm== HA_KEY_ALG_LONG_HASH)
     {
       keyinfo->flags|= HA_UNIQUE_HASH | HA_NOSAME;
       keyinfo->key_length= 0;
@@ -8073,6 +8072,7 @@ void setup_table_hash(TABLE *table)
       if (keyinfo->flags & HA_UNIQUE_HASH)
       {
         keyinfo->flags&= ~(HA_NOSAME | HA_UNIQUE_HASH);
+        keyinfo->algorithm= HA_KEY_ALG_BTREE;
         extra_key_part_hash+= keyinfo->ext_key_parts;
         keyinfo->key_part= keyinfo->key_part+ keyinfo->ext_key_parts;
         keyinfo->user_defined_key_parts= keyinfo->usable_key_parts=
@@ -8089,6 +8089,7 @@ void setup_table_hash(TABLE *table)
       if (s_keyinfo->flags & HA_UNIQUE_HASH)
       {
         s_keyinfo->flags&= ~(HA_NOSAME | HA_UNIQUE_HASH);
+        s_keyinfo->algorithm= HA_KEY_ALG_BTREE;
         extra_key_part_hash+= s_keyinfo->ext_key_parts;
         s_keyinfo->key_part= s_keyinfo->key_part+ s_keyinfo->ext_key_parts;
         s_keyinfo->user_defined_key_parts= s_keyinfo->usable_key_parts=
@@ -8128,6 +8129,7 @@ void re_setup_table(TABLE *table)
           keyinfo->key_part->field->is_long_column_hash)
       {
         keyinfo->flags|= (HA_NOSAME | HA_UNIQUE_HASH);
+        keyinfo->algorithm= HA_KEY_ALG_LONG_HASH;
         Item *h_item= keyinfo->key_part->field->vcol_info->expr_item;
         uint hash_parts= fields_in_hash_str(h_item);
         keyinfo->key_part= keyinfo->key_part- hash_parts;
@@ -8158,6 +8160,7 @@ void re_setup_table(TABLE *table)
           s_keyinfo->key_part->field->is_long_column_hash)
       {
         s_keyinfo->flags|= (HA_NOSAME | HA_UNIQUE_HASH);
+        keyinfo->algorithm= HA_KEY_ALG_LONG_HASH;
         extra_hash_parts++;
         /* Sometimes it can happen, that we does not parsed hash_str.
            Like when this function is called in ha_create. So we will
