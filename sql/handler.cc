@@ -5382,7 +5382,7 @@ int handler::compare_key(key_range *range)
   if (!range || in_range_check_pushed_down)
     return 0;					// No max range
   // in case of HA_UNIQUE_HASH we compare key in get_hash_key itself
-  if (!(table->key_info[active_index].flags & HA_UNIQUE_HASH))
+  if (table->key_info[active_index].flags & HA_UNIQUE_HASH)
     return 0;
   cmp= key_cmp(range_key_part, range->key, range->length);
   if (!cmp)
