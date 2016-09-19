@@ -802,11 +802,11 @@ static bool create_key_infos(const uchar *strpos, const uchar *frm_image_end,
       key_part->store_length=key_part->length;
     }
 
-    if (keyinfo->algorithm== HA_KEY_ALG_LONG_HASH)
+    if (keyinfo->algorithm == HA_KEY_ALG_LONG_HASH)
     {
       keyinfo->flags|= HA_UNIQUE_HASH | HA_NOSAME;
       keyinfo->key_length= 0;
-      share->extra_hash_parts++;
+      share->ext_key_parts++;
       // This empty key_part for storing Hash
       key_part++;
     }
@@ -1163,7 +1163,6 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   share->db_options_in_use= share->db_create_options;
   share->mysql_version= uint4korr(frm_image+51);
   share->null_field_first= 0;
-  share->extra_hash_parts= 0;
   if (!frm_image[32])				// New frm file in 3.23
   {
     uint cs_org= (((uint) frm_image[41]) << 8) + (uint) frm_image[38];
@@ -3034,16 +3033,14 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
     KEY	*key_info, *key_info_end;
     KEY_PART_INFO *key_part;
     uint n_length;
-    n_length= share->keys*sizeof(KEY) + (share->ext_key_parts +
-                                       share->extra_hash_parts)*sizeof(KEY_PART_INFO);
+    n_length= share->keys*sizeof(KEY) + share->ext_key_parts *sizeof(KEY_PART_INFO);
     if (!(key_info= (KEY*) alloc_root(&outparam->mem_root, n_length)))
       goto err;
     outparam->key_info= key_info;
     key_part= (reinterpret_cast<KEY_PART_INFO*>(key_info+share->keys));
 
     memcpy(key_info, share->key_info, sizeof(*key_info)*share->keys);
-    memcpy(key_part, share->key_info[0].key_part, (sizeof(*key_part) *
-                                 		(share->ext_key_parts + share->extra_hash_parts)));
+    memcpy(key_part, share->key_info[0].key_part, sizeof(*key_part) *share->ext_key_parts);
 
     for (key_info_end= key_info + share->keys ;
          key_info < key_info_end ;
@@ -3056,7 +3053,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
 
       key_part_end= key_part + (share->use_ext_keys ? key_info->ext_key_parts :
 			                              key_info->user_defined_key_parts) ;
-      if (key_info->flags & HA_UNIQUE_HASH)
+      //TODO a better way
+      if (key_info->flags & HA_UNIQUE_HASH && !share->use_ext_keys)
         key_part_end++;
       for ( ; key_part < key_part_end; key_part++)
       {
@@ -8056,11 +8054,17 @@ void delete_update_handler(THD *thd, TABLE *table)
  */
 void setup_table_hash(TABLE *table)
 {
+  /*
+     Extra parts of long unique key which are used only at server level
+     for example in key  unique(a, b, c)   //a b c are blob
+     extra_key_part_hash is 3
+   */
   uint extra_key_part_hash= 0;
+  uint hash_parts= 0;
   KEY *s_keyinfo= table->s->key_info;
   KEY *keyinfo= table->key_info;
   /*
-     Sometime s_keyinfo and key_info can be null. So
+     Sometime s_keyinfo or key_info can be null. So
      two different loop for keyinfo and s_keyinfo
      reference test case:- main.subselect_sj2
    */
@@ -8071,35 +8075,44 @@ void setup_table_hash(TABLE *table)
     {
       if (keyinfo->flags & HA_UNIQUE_HASH)
       {
+        DBUG_ASSERT(keyinfo->user_defined_key_parts ==
+                    keyinfo->ext_key_parts);
         keyinfo->flags&= ~(HA_NOSAME | HA_UNIQUE_HASH);
-        keyinfo->algorithm= HA_KEY_ALG_BTREE;
+        keyinfo->algorithm= HA_KEY_ALG_UNDEF;
         extra_key_part_hash+= keyinfo->ext_key_parts;
+        hash_parts++;
         keyinfo->key_part= keyinfo->key_part+ keyinfo->ext_key_parts;
         keyinfo->user_defined_key_parts= keyinfo->usable_key_parts=
             keyinfo->ext_key_parts= 1;
-        keyinfo->key_length= HA_HASH_KEY_LENGTH_WITH_NULL;
+        keyinfo->key_length= keyinfo->key_part->store_length;
       }
     }
+    table->s->key_parts-= extra_key_part_hash;
+    table->s->key_parts+= hash_parts;
+    table->s->ext_key_parts-= extra_key_part_hash;
   }
-  table->s->key_parts-= extra_key_part_hash - table->s->extra_hash_parts;
   if (s_keyinfo)
   {
     for (uint i= 0; i < table->s->keys; i++, s_keyinfo++)
     {
       if (s_keyinfo->flags & HA_UNIQUE_HASH)
       {
+        DBUG_ASSERT(s_keyinfo->user_defined_key_parts ==
+                    s_keyinfo->ext_key_parts);
         s_keyinfo->flags&= ~(HA_NOSAME | HA_UNIQUE_HASH);
         s_keyinfo->algorithm= HA_KEY_ALG_BTREE;
         extra_key_part_hash+= s_keyinfo->ext_key_parts;
         s_keyinfo->key_part= s_keyinfo->key_part+ s_keyinfo->ext_key_parts;
         s_keyinfo->user_defined_key_parts= s_keyinfo->usable_key_parts=
             s_keyinfo->ext_key_parts= 1;
-        s_keyinfo->key_length= HA_HASH_KEY_LENGTH_WITH_NULL;
+        s_keyinfo->key_length= s_keyinfo->key_part->store_length;
       }
     }
     if (!keyinfo)
     {
-      table->s->key_parts-= extra_key_part_hash - table->s->extra_hash_parts;
+      table->s->key_parts-= extra_key_part_hash;
+      table->s->key_parts+= hash_parts;
+      table->s->ext_key_parts-= extra_key_part_hash;
     }
   }
 }
@@ -8111,7 +8124,7 @@ void setup_table_hash(TABLE *table)
 void re_setup_table(TABLE *table)
 {
   //extra key parts excluding hash , which needs to be added in keyparts
-  uint extra_key_parts_ex_hash= 0, key_length= 0;
+  uint extra_key_parts_ex_hash= 0;
   uint extra_hash_parts= 0; // this var for share->extra_hash_parts
   KEY *s_keyinfo= table->s->key_info;
   KEY *keyinfo= table->key_info;
@@ -8130,28 +8143,24 @@ void re_setup_table(TABLE *table)
       {
         keyinfo->flags|= (HA_NOSAME | HA_UNIQUE_HASH);
         keyinfo->algorithm= HA_KEY_ALG_LONG_HASH;
-        Item *h_item= keyinfo->key_part->field->vcol_info->expr_item;
+        /* Sometimes it can happen, that we does not parsed hash_str.
+           Like when this function is called in ha_create. So we will
+           Use field from  table->field rather then share->field*/
+        Item *h_item= table->field[keyinfo->key_part->fieldnr - 1]->
+                                                   vcol_info->expr_item;
         uint hash_parts= fields_in_hash_str(h_item);
         keyinfo->key_part= keyinfo->key_part- hash_parts;
         keyinfo->user_defined_key_parts= keyinfo->usable_key_parts=
             keyinfo->ext_key_parts= hash_parts;
-        /*
-         * todo good english
-           Actually extra_key_parts_ex_hash is added in share->keyparts.
-           But share->keypart already contains extra one keypart for hash
-           (setup in setup_table_hash). So that is why 1 minused.
-          */
-        extra_key_parts_ex_hash+= hash_parts - 1;
+        extra_key_parts_ex_hash+= hash_parts;
         extra_hash_parts++;
-        for (uint i= 0; i < hash_parts; i++)
-        {
-          key_length+= keyinfo->key_part[i].length;
-        }
-        keyinfo->key_length= key_length;
+        keyinfo->key_length= -1;
       }
     }
-  }
-  table->s->key_parts+= extra_key_parts_ex_hash;
+    table->s->key_parts-= extra_hash_parts;
+    table->s->key_parts+= extra_key_parts_ex_hash;
+    table->s->ext_key_parts+= extra_key_parts_ex_hash + extra_hash_parts;
+  } 
   if (s_keyinfo)
   {
     for (uint i= 0; i < table->s->keys; i++, s_keyinfo++)
@@ -8160,7 +8169,7 @@ void re_setup_table(TABLE *table)
           s_keyinfo->key_part->field->is_long_column_hash)
       {
         s_keyinfo->flags|= (HA_NOSAME | HA_UNIQUE_HASH);
-        keyinfo->algorithm= HA_KEY_ALG_LONG_HASH;
+        s_keyinfo->algorithm= HA_KEY_ALG_LONG_HASH;
         extra_hash_parts++;
         /* Sometimes it can happen, that we does not parsed hash_str.
            Like when this function is called in ha_create. So we will
@@ -8171,18 +8180,15 @@ void re_setup_table(TABLE *table)
         s_keyinfo->key_part= s_keyinfo->key_part- hash_parts;
         s_keyinfo->user_defined_key_parts= s_keyinfo->usable_key_parts=
             s_keyinfo->ext_key_parts= hash_parts;
-        extra_key_parts_ex_hash+= hash_parts - 1;
-        for (uint i= 0; i < hash_parts; i++)
-        {
-          key_length+= s_keyinfo->key_part[i].length;
-        }
-        s_keyinfo->key_length= key_length;
+        extra_key_parts_ex_hash+= hash_parts;
+        s_keyinfo->key_length= -1;
       }
     }
     if (!keyinfo)
     {
-      table->s->key_parts+= extra_key_parts_ex_hash - extra_hash_parts;
-      table->s->extra_hash_parts= extra_hash_parts;
+      table->s->key_parts-= extra_hash_parts;
+      table->s->key_parts+= extra_key_parts_ex_hash;
+      table->s->ext_key_parts+= extra_key_parts_ex_hash + extra_hash_parts;
     }
   }
 }

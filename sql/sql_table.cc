@@ -4115,7 +4115,8 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
 	else if (!(file->ha_table_flags() & HA_NO_PREFIX_CHAR_KEYS))
 	  key_part_length= column->length;
       }
-      else if (key_part_length == 0 && (sql_field->flags & NOT_NULL_FLAG))
+      else if (key_part_length == 0 && (sql_field->flags & NOT_NULL_FLAG)
+               && !is_hash_field_added)
       {
 	my_error(ER_WRONG_KEY_COLUMN, MYF(0), file->table_type(),
                  column->field_name.str);
@@ -7848,6 +7849,11 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     char *key_name= key_info->name;
     Alter_drop *drop;
     drop_it.rewind();
+    if (key_info->flags & HA_UNIQUE_HASH)
+    {
+      alter_info->flags |= Alter_info::ALTER_DROP_COLUMN;
+      alter_info->flags |= Alter_info::ALTER_ADD_COLUMN;
+    }
     while ((drop=drop_it++))
     {
       if (drop->type == Alter_drop::KEY &&
@@ -7880,11 +7886,6 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
     KEY_PART_INFO *key_part= key_info->key_part;
     key_parts.empty();
     bool delete_index_stat= FALSE;
-    if (key_info->flags & HA_UNIQUE_HASH)
-    {
-      alter_info->flags |= Alter_info::ALTER_DROP_COLUMN;
-      alter_info->flags |= Alter_info::ALTER_ADD_COLUMN;
-    }
     for (uint j=0 ; j < key_info->user_defined_key_parts ; j++,key_part++)
     {
       if (!key_part->field)
@@ -7970,8 +7971,10 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
       Key *key;
       enum Key::Keytype key_type;
       bzero((char*) &key_create_info, sizeof(key_create_info));
-
-      key_create_info.algorithm= key_info->algorithm;
+      if (key_info->flags & HA_UNIQUE_HASH)
+        key_create_info.algorithm= HA_KEY_ALG_UNDEF;
+      else
+        key_create_info.algorithm= key_info->algorithm;
       if (key_info->flags & HA_USES_BLOCK_SIZE)
         key_create_info.block_size= key_info->block_size;
       if (key_info->flags & HA_USES_PARSER)

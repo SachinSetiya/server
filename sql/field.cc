@@ -7757,19 +7757,6 @@ uint Field_varstring::get_key_image(uchar *buff, uint length,
                                 local_char_length);
   set_if_smaller(f_length, local_char_length);
   /* Key is always stored with 2 bytes */
-  if (type_arg == itHASH)
-  {
-    DBUG_ASSERT(this->table->in_use);
-    uchar *ptr;
-    if (!(ptr= (uchar *)alloc_root(this->table->in_use->mem_root,
-                                  f_length)))
-      return 0;
-    memcpy(ptr, pos, f_length);
-    int4store(buff, f_length);
-    buff+=4;;
-    memcpy(buff, (uchar *)&ptr, sizeof(char*));
-    return HA_HASH_KEY_PART_LENGTH;
-  }
   int2store(buff,f_length);
   memcpy(buff+HA_KEY_BLOB_LENGTH, pos, f_length);
   if (f_length < length)
@@ -8198,14 +8185,9 @@ uint Field_blob::get_key_image(uchar *buff,uint length, imagetype type_arg)
   if (type_arg == itHASH)
   {
     DBUG_ASSERT(this->table->in_use);
-    uchar *ptr;
-    if (!(ptr= (uchar *)alloc_root(this->table->in_use->mem_root,
-                                  blob_length)))
-      return 0;
-    memcpy(ptr, blob, blob_length);
     int4store(buff, blob_length);
     buff+=4;
-    memcpy(buff,(uchar *)&ptr, sizeof(uchar*));
+    memcpy(buff,(uchar *)&blob, sizeof(uchar*));
     return HA_HASH_KEY_PART_LENGTH;
   }
   uint local_char_length= length / field_charset->mbmaxlen;

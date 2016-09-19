@@ -5899,15 +5899,15 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h, uchar *new_r
     return 0;
   hash_field= table->key_info[key_no].key_part->field;
   DBUG_ASSERT((table->key_info[key_no].flags & HA_NULL_PART_KEY &&
-              table->key_info[key_no].key_length == HA_HASH_KEY_LENGTH_WITH_NULL)
-           || table->key_info[key_no].key_length == HA_HASH_KEY_LENGTH_WITHOUT_NULL);
+      table->key_info[key_no].key_length == HA_HASH_KEY_LENGTH_WITH_NULL)
+    || table->key_info[key_no].key_length == HA_HASH_KEY_LENGTH_WITHOUT_NULL);
   uchar ptr[HA_HASH_KEY_LENGTH_WITH_NULL];
 
-  if (hash_field->is_null())
+  if (hash_field->is_real_null())
     return 0;
 
   key_copy(ptr, new_rec, &table->key_info[key_no],
-                     table->key_info[key_no].key_length, false);
+              table->key_info[key_no].key_length, false);
 
   if (!table->check_unique_buf)
     table->check_unique_buf= (uchar *)alloc_root(&table->mem_root,
