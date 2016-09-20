@@ -3054,7 +3054,7 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
       key_part_end= key_part + (share->use_ext_keys ? key_info->ext_key_parts :
 			                              key_info->user_defined_key_parts) ;
       //TODO a better way
-      if (key_info->flags & HA_UNIQUE_HASH && !share->use_ext_keys)
+      if (key_info->flags & HA_UNIQUE_HASH)
         key_part_end++;
       for ( ; key_part < key_part_end; key_part++)
       {
