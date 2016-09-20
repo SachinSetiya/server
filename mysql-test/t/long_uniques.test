@@ -434,7 +434,7 @@ show create table t2;
 insert into t2 values(1,1);
 insert into t2 values(2,1);
 drop table t2;
---echo #not null test
+--echo #not null test //todo solve warnings
 create table t1(a blob unique not null);
 desc t1;
 show create table t1;

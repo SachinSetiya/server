@@ -7953,10 +7953,17 @@ int find_field_pos_in_hash(Item *hash_item, const  char * field_name)
 
   for (uint j=0; j < arg_count; j++)
   {
-    DBUG_ASSERT(arguments[j]->type() == Item::FIELD_ITEM );
-                // this one for later use left(fld_name,length)
-              //  arguments[j]->type() == Item::STRING_ITEM);
-    t_field= static_cast<Item_field *>(arguments[j])->field;
+    DBUG_ASSERT(arguments[j]->type() == Item::FIELD_ITEM ||
+                arguments[j]->type() == Item::FUNC_ITEM);
+    if (arguments[j]->type() == Item::FIELD_ITEM)
+    {
+      t_field= static_cast<Item_field *>(arguments[j])->field;
+    }
+    else
+    {
+      Item_func_left *fnc= static_cast<Item_func_left *>(arguments[j]);
+      t_field= static_cast<Item_field *>(fnc->arguments()[0])->field;
+    }
     if (!my_strcasecmp(system_charset_info, t_field->field_name, field_name))
       return j;
   }

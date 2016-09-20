@@ -11,8 +11,19 @@
 #test 1
 create table t1 (a blob unique);
 show keys from t1;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment
-t1	1	a	1	a	A	0	NULL	NULL	YES	HASH_INDEX		
+Table	t1
+Non_unique	0
+Key_name	a
+Seq_in_index	1
+Column_name	a
+Collation	A
+Cardinality	NULL
+Sub_part	NULL
+Packed	NULL
+Null	YES
+Index_type	HASH_INDEX
+Comment	
+Index_comment	
 insert into t1 values(1),(2),(3),(4),(5);
 select * from t1;
 a
@@ -60,8 +71,8 @@ create table t1 (a int primary key, b blob unique , c int unique );
 show keys from t1;
 Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment
 t1	0	PRIMARY	1	a	A	0	NULL	NULL		BTREE		
+t1	0	b	1	b	A	NULL	NULL	NULL	YES	HASH_INDEX		
 t1	0	c	1	c	A	NULL	NULL	NULL	YES	BTREE		
-t1	1	b	1	b	A	0	NULL	NULL	YES	HASH_INDEX		
 insert into t1 values(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(6,6,6),(7,7,7);
 select * from t1 limit 3;
 a	b	c
@@ -119,9 +130,9 @@ drop table t1;
 create table t1 (a blob unique, b blob unique , c blob unique);
 show keys from t1;
 Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment
-t1	1	a	1	a	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	b	1	b	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	c	1	c	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	a	1	a	A	NULL	NULL	NULL	YES	HASH_INDEX		
+t1	0	b	1	b	A	NULL	NULL	NULL	YES	HASH_INDEX		
+t1	0	c	1	c	A	NULL	NULL	NULL	YES	HASH_INDEX		
 insert into t1 values(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(6,6,6),(7,7,7);
 select * from t1 limit 3;
 a	b	c
@@ -191,7 +202,7 @@ create table t1 (a int primary key , b int, c blob , d blob , e  varchar(2000), 
 unique (b,c), unique (b,f),unique(e,g),unique(a,b,c,d,e,f,g));
 desc t1;
 Field	Type	Null	Key	Default	Extra
-a	int(11)	NO	MUL	NULL	
+a	int(11)	NO	PRI	NULL	
 b	int(11)	YES	MUL	NULL	
 c	blob	YES		NULL	
 d	blob	YES		NULL	
@@ -209,27 +220,27 @@ t1	CREATE TABLE `t1` (
   `f` int(11) DEFAULT NULL,
   `g` text DEFAULT NULL,
   PRIMARY KEY (`a`),
-  UNIQUE KEY `b` (`b`,`f`),
-  UNIQUE KEY `b_c`(`b`,`c`),
-  UNIQUE KEY `e_g`(`e`,`g`),
-  UNIQUE KEY `a_b_c_d_e_f_g`(`a`,`b`,`c`,`d`,`e`,`f`,`g`)
+  UNIQUE KEY `b` (`b`,`c`),
+  UNIQUE KEY `b_2` (`b`,`f`),
+  UNIQUE KEY `e` (`e`,`g`),
+  UNIQUE KEY `a` (`a`,`b`,`c`,`d`,`e`,`f`,`g`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 show keys from t1;
 Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment
 t1	0	PRIMARY	1	a	A	0	NULL	NULL		BTREE		
-t1	0	b	1	b	A	NULL	NULL	NULL	YES	BTREE		
-t1	0	b	2	f	A	NULL	NULL	NULL	YES	BTREE		
-t1	1	b_c	1	b	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	b_c	2	c	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	e_g	1	e	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	e_g	2	g	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	a_b_c_d_e_f_g	1	a	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	a_b_c_d_e_f_g	2	b	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	a_b_c_d_e_f_g	3	c	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	a_b_c_d_e_f_g	4	d	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	a_b_c_d_e_f_g	5	e	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	a_b_c_d_e_f_g	6	f	A	0	NULL	NULL	YES	HASH_INDEX		
-t1	1	a_b_c_d_e_f_g	7	g	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	b	1	b	A	NULL	NULL	NULL	YES	HASH_INDEX		
+t1	0	b	2	c	A	NULL	NULL	NULL	YES	HASH_INDEX		
+t1	0	b_2	1	b	A	NULL	NULL	NULL	YES	BTREE		
+t1	0	b_2	2	f	A	NULL	NULL	NULL	YES	BTREE		
+t1	0	e	1	e	A	NULL	NULL	NULL	YES	HASH_INDEX		
+t1	0	e	2	g	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	a	1	a	A	0	NULL	NULL		HASH_INDEX		
+t1	0	a	2	b	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	a	3	c	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	a	4	d	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	a	5	e	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	a	6	f	A	0	NULL	NULL	YES	HASH_INDEX		
+t1	0	a	7	g	A	0	NULL	NULL	YES	HASH_INDEX		
 insert into t1 values(1,1,1,1,1,1,1),(2,2,2,2,2,2,2),(3,3,3,3,3,3,3),(4,4,4,4,4,4,4),
 (5,5,5,5,5,5,5),(6,6,6,6,6,6,6),(7,7,7,7,7,7,7),(8,8,8,8,8,8,8),(9,9,9,9,9,9,9);
 select * from t1 limit 3;
@@ -239,11 +250,11 @@ a	b	c	d	e	f	g
 3	3	3	3	3	3	3
 #key b_c
 update t1 set b=2 ,c=2 where a=1;
-ERROR 23000: Duplicate entry '2-2' for key 'b_c'
+ERROR 23000: Duplicate entry '2-2' for key 'b'
 update t1 set b=b+34, c=c+34 where e=1 and g=1 ;
 update t1 set b=35, c=35 where e=1 and g=1 ;
 update t1 set b=b+1, c=c+1 where a>0;
-ERROR 23000: Duplicate entry '3-3' for key 'b_c'
+ERROR 23000: Duplicate entry '3-3' for key 'b'
 update ignore t1 set b=b+1, c=c+1 where a>0;
 select * from t1 ;
 a	b	c	d	e	f	g
@@ -261,11 +272,11 @@ insert into t1 values(1,1,1,1,1,1,1),(2,2,2,2,2,2,2),(3,3,3,3,3,3,3),(4,4,4,4,4,
 (5,5,5,5,5,5,5),(6,6,6,6,6,6,6),(7,7,7,7,7,7,7),(8,8,8,8,8,8,8),(9,9,9,9,9,9,9);
 #key b_f no hash key
 update t1 set b=2 , f=2 where a=1;
-ERROR 23000: Duplicate entry '2-2' for key 'b'
+ERROR 23000: Duplicate entry '2-2' for key 'b_2'
 update  t1 set b=b+33, f=f+33 where e=1 and g=1;
 update t1 set b=34, f=34 where e=1 and g=1 ;
 update t1 set b=b+1, f=f+1 where a>0;
-ERROR 23000: Duplicate entry '3-3' for key 'b'
+ERROR 23000: Duplicate entry '3-3' for key 'b_2'
 update ignore t1 set b=b+1, f=f+1 where a>0;
 select * from t1 ;
 a	b	c	d	e	f	g
@@ -283,14 +294,14 @@ insert into t1 values(1,1,1,1,1,1,1),(2,2,2,2,2,2,2),(3,3,3,3,3,3,3),(4,4,4,4,4,
 (5,5,5,5,5,5,5),(6,6,6,6,6,6,6),(7,7,7,7,7,7,7),(8,8,8,8,8,8,8),(9,9,9,9,9,9,9);
 #key e_g
 update t1 set e=2 , g=2 where a=1;
-ERROR 23000: Duplicate entry '2-2' for key 'e_g'
+ERROR 23000: Duplicate entry '2-2' for key 'e'
 update  t1 set e=e+34, g=g+34 where a=1;
 update t1 set e=34, g=34 where e=1 and g=1 ;
 select * from t1 where  a=1;
 a	b	c	d	e	f	g
 1	1	1	1	35	1	35
 update t1 set e=e+1, g=g+1 where a>0;
-ERROR 23000: Duplicate entry '3-3' for key 'e_g'
+ERROR 23000: Duplicate entry '3-3' for key 'e'
 update ignore t1 set e=e+1, g=g+1 where a>0;
 select * from t1 ;
 a	b	c	d	e	f	g
