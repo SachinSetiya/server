@@ -8303,6 +8303,7 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
       t_field= keyinfo->key_part[i].field;
       t_field->move_field(t_field->ptr-diff,
                           t_field->null_ptr-diff, t_field->null_bit);
+      fld[i]->free();
     }
   }
   if (!is_index_inited)
