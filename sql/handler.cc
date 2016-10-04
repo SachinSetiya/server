@@ -5893,7 +5893,7 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h, uchar *new_r
                                    uint key_no)
 {
   Field *hash_field;
-  int result;
+  int result, error= 0;
   if (!(table->key_info[key_no].user_defined_key_parts == 1
         && table->key_info[key_no].key_part->field->is_long_column_hash))
     return 0;
@@ -5967,13 +5967,21 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h, uchar *new_r
     if (is_same)
     {
       table->dupp_hash_key= key_no;
-      return HA_ERR_FOUND_DUPP_KEY;
+      error= HA_ERR_FOUND_DUPP_KEY;
+      goto exit;
     }
     else
-      return 0;
+      goto exit;
   }
+  if (result == HA_ERR_LOCK_WAIT_TIMEOUT)
+  {
+    table->dupp_hash_key= key_no;
+    //TODO check if this is the only case
+    error= HA_ERR_FOUND_DUPP_KEY;
+  }
+  exit:
   h->ha_index_end();
-  return 0;
+  return error;
 }
 /** @brief
     check whether inserted/updated records breaks the
