@@ -1325,7 +1325,7 @@ t2	CREATE TABLE `t2` (
 insert into t2 values(1,1);
 insert into t2 values(2,1);
 drop table t2;
-#not null test
+#not null test //todo solve warnings
 create table t1(a blob unique not null);
 desc t1;
 Field	Type	Null	Key	Default	Extra
@@ -1337,18 +1337,12 @@ t1	CREATE TABLE `t1` (
   UNIQUE KEY `a` (`a`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 insert into t1 values(1);
-Warnings:
-Warning	1364	Field 'DB_ROW_HASH_1' doesn't have a default value
 insert into t1 values(3);
-Warnings:
-Warning	1364	Field 'DB_ROW_HASH_1' doesn't have a default value
 insert into t1 values(1);
 ERROR 23000: Duplicate entry '1' for key 'a'
 drop table t1;
 create table t1(a int primary key, b blob unique , c blob unique not null);
 insert into t1 values(1,1,1);
-Warnings:
-Warning	1364	Field 'DB_ROW_HASH_2' doesn't have a default value
 insert into t1 values(2,1,2);
 ERROR 23000: Duplicate entry '1' for key 'b'
 insert into t1 values(3,3,1);
@@ -1370,13 +1364,7 @@ t1	CREATE TABLE `t1` (
   UNIQUE KEY `b` (`b`,`c`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 insert into t1 values (1, 2, 3);
-Warnings:
-Warning	1364	Field 'DB_ROW_HASH_2' doesn't have a default value
-Warning	1364	Field 'DB_ROW_HASH_1' doesn't have a default value
 insert into t1 values (2, 1, 3);
-Warnings:
-Warning	1364	Field 'DB_ROW_HASH_2' doesn't have a default value
-Warning	1364	Field 'DB_ROW_HASH_1' doesn't have a default value
 insert into t1 values (2, 1, 3);
 ERROR 23000: Duplicate entry '2' for key 'a'
 drop table t1;

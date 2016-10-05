@@ -5934,7 +5934,7 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h, uchar *new_r
       for (uint j=0; j < arg_count; j++)
       {
         DBUG_ASSERT(arguments[j]->type() == Item::FIELD_ITEM ||
-                    // this one for later use left(fld_name,length)
+                    // this one for left(fld_name,length)
                     arguments[j]->type() == Item::FUNC_ITEM);
         if (arguments[j]->type() == Item::FIELD_ITEM)
         {
@@ -5963,7 +5963,6 @@ static int check_duplicate_long_entry_key(TABLE *table, handler *h, uchar *new_r
     }
     while (!is_same && !(result= table->file->ha_index_next_same(table->check_unique_buf,
                          ptr, table->key_info[key_no].key_length)));
-    h->ha_index_end();
     if (is_same)
     {
       table->dupp_hash_key= key_no;

@@ -3237,7 +3237,7 @@ static void add_hash_field(THD * thd, List<Create_field> *create_list,
     fields array , So we have to change key_part
     field index
    */
-  for (uint i= 0; i <= key_index; i++, key_info++)
+  for (int i= 0; i <= key_index; i++, key_info++)
   {
     KEY_PART_INFO *info= key_info->key_part;
     for (uint j= 0; j <  key_info->user_defined_key_parts; j++, info++)
@@ -4238,10 +4238,21 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
          null_fields++;
       else
       {
-        static_cast<Create_field *>(alter_info->create_list.head())->flags|=
-            NOT_NULL_FLAG;
-        static_cast<Create_field *>(alter_info->create_list.head())->pack_flag&=
-            ~FIELDFLAG_MAYBE_NULL;
+        Create_field *hash_fld= static_cast<Create_field *>(alter_info->create_list.head());
+        hash_fld->flags|= NOT_NULL_FLAG;
+        hash_fld->pack_flag&= ~FIELDFLAG_MAYBE_NULL;
+        /*
+          Althought we do not need default value anywhere in code , but if we create
+          table with non null long columns , then at the time of insert we get warning.
+          So default value is used so solve this warning.
+        */
+        Virtual_column_info *default_value= new (thd->mem_root) Virtual_column_info();
+        char * def_str= (char *)alloc_root(thd->mem_root, 2);
+        strncpy(def_str, "0", 1);
+        default_value->expr_str.str= def_str;
+        default_value->expr_str.length= 1;
+        default_value->expr_item= new (thd->mem_root) Item_int(thd,0);
+        hash_fld->default_value= default_value;
       }
     }
     if (validate_comment_length(thd, &key->key_create_info.comment,

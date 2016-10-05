@@ -1916,7 +1916,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
                         HA_HASH_FIELD_LENGTH*(hash_field_used_no);
         hash_fld= share->field[hash_field_used_no];
         temp_key_part= keyinfo->key_part;
-        Virtual_column_info *v= new (&share->mem_root) Virtual_column_info();;
+        Virtual_column_info *v= new (&share->mem_root) Virtual_column_info();
         String hash_str;
         hash_str.append(ha_hash_str.str,ha_hash_str.length);
         hash_str.append(STRING_WITH_LEN("("));
@@ -8135,7 +8135,6 @@ void re_setup_table(TABLE *table)
   uint extra_hash_parts= 0; // this var for share->extra_hash_parts
   KEY *s_keyinfo= table->s->key_info;
   KEY *keyinfo= table->key_info;
-  KEY_PART_INFO *temp;
   /*
      Sometime s_keyinfo can be null so
      two different loop for keyinfo and s_keyinfo
@@ -8297,7 +8296,6 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
     }
     while (!is_same && !(result= h->ha_index_next_same(rec_buff, hash_buff,
                                           keyinfo->key_length)));
-    exit:
     for (uint i=0; i < keyinfo->user_defined_key_parts; i++)
     {
       t_field= keyinfo->key_part[i].field;
