@@ -8301,11 +8301,20 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
       t_field= keyinfo->key_part[i].field;
       t_field->move_field(t_field->ptr-diff,
                           t_field->null_ptr-diff, t_field->null_bit);
-      fld[i]->free();
     }
   }
   if (!is_index_inited)
     h->ha_index_end();
+  for (uint i=0; i < keyinfo->user_defined_key_parts; i++)
+  {
+    if (fld[i]->flags & BLOB_FLAG)
+    {
+      Field_blob *blb= static_cast<Field_blob *>(fld[i]);
+      uchar * addr;
+      blb->get_ptr(&addr);
+      my_free(addr);
+    }
+  }
   re_setup_table(table);
   return result;
 }
