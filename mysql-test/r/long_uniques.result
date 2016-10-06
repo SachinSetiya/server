@@ -1181,7 +1181,6 @@ DB_ROW_HASH_1	DB_ROW_HASH_2
 44	4
 select * from t1 where DB_ROW_HASH_1 in (select DB_ROW_HASH_1 from t2);
 ERROR 42S22: Unknown column 'DB_ROW_HASH_1' in 'IN/ALL/ANY subquery'
-#this is a bug which need to be solved
 select DB_ROW_HASH_1, DB_ROW_HASH_2 from t1,t2 where DB_ROW_HASH_1 in (select DB_ROW_HASH_1 from t2);
 DB_ROW_HASH_1	DB_ROW_HASH_2
 11	1
@@ -1200,7 +1199,6 @@ DB_ROW_HASH_1	DB_ROW_HASH_2
 22	2
 33	3
 44	4
-#BUG
 select * from t2 where DB_ROW_HASH_1 in (select DB_ROW_HASH_1 from t1);
 DB_ROW_HASH_1	DB_ROW_HASH_2
 11	1
@@ -1209,7 +1207,12 @@ DB_ROW_HASH_1	DB_ROW_HASH_2
 44	4
 select DB_ROW_HASH_1 from t1,t2 where t1.DB_ROW_HASH_1 = t2.DB_ROW_HASH_2;
 ERROR 42S22: Unknown column 't1.DB_ROW_HASH_1' in 'where clause'
-#this statement crashes the server because of optimizer select DB_ROW_HASH_1 from t1 inner join t2 on t1.a = t2.DB_ROW_HASH_1;
+select DB_ROW_HASH_1 from t1 inner join t2 on t1.a = t2.DB_ROW_HASH_2;
+DB_ROW_HASH_1
+11
+22
+33
+44
 drop table t1,t2;
 #very long blob entry;
 SET @@GLOBAL.max_allowed_packet=67108864;
