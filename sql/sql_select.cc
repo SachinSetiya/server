@@ -8908,7 +8908,7 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
   KEY *keyinfo;
   KEYUSE *keyuse= org_keyuse;
   bool ftkey= (keyuse->keypart == FT_KEYPART);
-  bool is_hash_key_part;
+  bool is_hash_key_part= false;
   THD *thd= join->thd;
   DBUG_ENTER("create_ref_for_key");
 
@@ -9030,7 +9030,8 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
       if (keyuse->null_rejecting) 
         j->ref.null_rejecting|= (key_part_map)1 << i;
       keyuse_uses_no_tables= keyuse_uses_no_tables && !keyuse->used_tables;
-      is_hash_key_part= keyinfo->key_part[keyuse->keypart].key_part_flag &
+      if (!is_hash_join_key_no(key))
+        is_hash_key_part= keyinfo->key_part[keyuse->keypart].key_part_flag &
                                                      HA_HASH_KEY_PART_FLAG;
       if (is_hash_key_part)
         DBUG_ASSERT(keyinfo->flags & HA_UNIQUE_HASH);
