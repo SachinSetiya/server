@@ -91,13 +91,23 @@ handler::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
       rows= 1; /* there can be at most one row */
     else
     {
-      if (HA_POS_ERROR == (rows= this->records_in_range(keyno, min_endp, 
-                                                        max_endp)))
+      /*
+        In the case of where query in HA_UNIQUE_HASH there will be only
+        2 case UNIQUE_RANGE or NULL_RANGE
+        Currently we are not optimizing NULL range
+       */
+      if (table->key_info[keyno].flags & HA_UNIQUE_HASH && range.range_flag & NULL_RANGE)
       {
-        /* Can't scan one range => can't do MRR scan at all */
-        total_rows= HA_POS_ERROR;
-        break;
+        rows= HA_POS_ERROR;
       }
+      else
+        if (HA_POS_ERROR == (rows= this->records_in_range(keyno, min_endp,
+                                                          max_endp)))
+        {
+          /* Can't scan one range => can't do MRR scan at all */
+          total_rows= HA_POS_ERROR;
+          break;
+        }
     }
     total_rows += rows;
   }

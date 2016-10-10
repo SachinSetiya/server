@@ -8312,7 +8312,7 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
       Field_blob *blb= static_cast<Field_blob *>(fld[i]);
       uchar * addr;
       blb->get_ptr(&addr);
-      my_free(addr);
+      //my_free(addr);
     }
   }
   re_setup_table(table);

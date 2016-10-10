@@ -1,4 +1,4 @@
--- source include/have_innodb.inc
+--source include/have_innodb.inc
 --echo #test for concurrent insert of long unique in innodb 
 create table t1(a blob unique) engine= InnoDB;
 show create table t1;

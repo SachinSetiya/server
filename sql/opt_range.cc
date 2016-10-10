@@ -7901,7 +7901,25 @@ Item_bool_func::get_mm_leaf(RANGE_OPT_PARAM *param,
     goto end;
   if (maybe_null)
     *str= (uchar) field->is_real_null();        // Set to 1 if null
-  field->get_key_image(str+maybe_null, key_part->length,
+  if (key_part->image_type == Field::itHASH)
+  {
+    /*
+      This type of image only store data ptr so we have
+      alloc on thd->mem_root , up to this point data is stored using
+      my_malloc. We cant rely on this because if there is one more
+      conditon on same field the old data will be lost
+     */
+    uint fld_data_length= field->value_length();
+    uchar *data= (uchar *)alloc_root(param->thd->mem_root, fld_data_length);
+    String buffer, *f_data;
+    f_data= field->val_str(&buffer);
+    memcpy(data, f_data->ptr(), fld_data_length);
+    field->free();
+    int4store(str+maybe_null, fld_data_length);
+    memcpy(str+maybe_null+4, &data, 8);
+  }
+  else
+    field->get_key_image(str+maybe_null, key_part->length,
                        key_part->image_type);
   if (!(tree= new (alloc) SEL_ARG(field, str, str)))
     goto end;                                   // out of memory
