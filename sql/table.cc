@@ -8307,12 +8307,12 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
     h->ha_index_end();
   for (uint i=0; i < keyinfo->user_defined_key_parts; i++)
   {
-    if (fld[i]->flags & BLOB_FLAG)
+    if ((fld[i]->flags & BLOB_FLAG) &&  (fld[i]->flags & FIELD_EX_FREED))
     {
       Field_blob *blb= static_cast<Field_blob *>(fld[i]);
       uchar * addr;
       blb->get_ptr(&addr);
-      //my_free(addr);
+      my_free(addr);
     }
   }
   re_setup_table(table);

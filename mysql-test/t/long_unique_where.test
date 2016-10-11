@@ -1,3 +1,4 @@
+--source include/have_innodb.inc
 create table t1(abc blob unique);
 insert into t1 values(1),(2),(3),(4),(5),(11),(12),(31),(14),(15),(NULL)
 ,(NULL),(NULL),(NULL),(NULL),(NULL),(NULL),(NULL),(NULL),(NULL),(NULL),
@@ -60,4 +61,65 @@ explain select * from t1 where xyz='63' and abc='5';
 select * from t1 where xyz='63' and abc='5';
 explain select * from t1 where xyz='63' or abc='5';
 select * from t1 where xyz='63' or abc='5';
+--echo # now the first one does not exist ;
+explain select * from t1 where abc='51' and xyz='63';
+select * from t1 where abc='51' and xyz='63';
+--echo # now the second one does not exist ;
+explain select * from t1 where abc='5'and xyz='613';
+select * from t1 where abc='5' and xyz='613';
+explain select * from t1 where abc is NULL;
+select * from t1 where abc is NULL;
+explain select * from t1 where abc is NULL and xyz='2';
+select * from t1 where abc is NULL and xyz='2';
+--echo #range conditions;
+explain select * from t1 where abc>'11' limit 5;
+select * from t1 where abc>'11' limit 5;
+explain select * from t1 where xyz<'11';
+select * from t1 where xyz<'11'; 
+explain select * from t1 where abc>='51' and xyz<='63';
+select * from t1 where abc>='51' and xyz<='63';
+explain select * from t1 where abc>'5' and xyz<'613';
+select * from t1 where abc>'5' and xyz<'613';
+explain select * from t1 where abc='5' and xyz>'1';
+select * from t1 where abc='5' and xyz>'1';
+explain select * from t1 where abc<'55' and xyz='1';
+select * from t1 where abc<'55' and xyz='1';
+explain select * from t1 where abc<='55' or xyz>='1';
+select * from t1 where abc<='55' and xyz>='1';
 drop table t1;
+--echo #now the unique (a,b,c..........);
+--echo #let us do more hard test by using unique(a,b,c,d) key first ;
+create table t1 (a blob , b blob , c blob , d blob , unique(a,b,c) ,unique (b,c,d));
+show create table t1;
+insert into t1 values(1,1,1,1),(2,1,2,1),(1,3,3,1),(4,1,4,1),(1,5,1,5),
+(6,1,6,1),(1,7,1,7),(8,1,1,8),(1,9,9,1),(2,2,2,2),(4,4,4,4),(5,5,5,5),(6,6,6,6),
+(126,216,603,640),(603,460,660,706),(806,609,609,605),(62,62,22,33),(64,65,66,76),
+(16,26,63,64),(63,46,66,76),(86,69,69,65),(622,622,622,633),(644,655,666,776);
+select * from t1 limit 3;
+--echo #simple where;
+
+--echo #key (a,b,c);
+explain  select * from t1 where a='1' and b='1' and c='1';
+select * from t1 where a='1' and b='1' and c='1';
+explain  select * from t1 where a='1' and b='4444' and c='1';
+select * from t1 where a='1' and b='4444' and c='1';
+--echo #incomplete key;
+explain  select * from t1 where a='1' and c='1';
+select * from t1 where a='1' and c='1';
+explain  select * from t1 where a='1' and b='4444' ;
+select * from t1 where a='1' and b='4444' ;
+explain  select * from t1 where b='1' and c='1';
+select * from t1 where b='1' and c='1';
+
+--echo #key (b,c,d);
+explain  select * from t1 where d='1' and b='1' and c='1';
+select * from t1 where d='1' and b='1' and c='1';
+explain  select * from t1 where d='1' and b='4444' and c='1';
+select * from t1 where d='1' and b='4444' and c='1';
+--echo #incomplete key;
+explain  select * from t1 where d='1' and c='1';
+select * from t1 where d='1' and c='1';
+explain  select * from t1 where d='1' and b='4444' ;
+select * from t1 where d='1' and b='4444' ;
+explain  select * from t1 where b='1' and c='1';
+select * from t1 where b='1' and c='1';
