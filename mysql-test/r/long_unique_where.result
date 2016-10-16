@@ -309,3 +309,4 @@ select * from t1 where b='1' and c='1';
 a	b	c	d
 1	1	1	1
 8	1	1	8
+drop table t1;

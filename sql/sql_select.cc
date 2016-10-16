@@ -9034,7 +9034,10 @@ static bool create_ref_for_key(JOIN *join, JOIN_TAB *j,
         is_hash_key_part= keyinfo->key_part[keyuse->keypart].key_part_flag &
                                                      HA_HASH_KEY_PART_FLAG;
       if (is_hash_key_part)
+      {
         DBUG_ASSERT(keyinfo->flags & HA_UNIQUE_HASH);
+        keyinfo->key_part[keyuse->keypart].key_part_flag |= HA_FIELD_EX_FREED;
+      }
       /*
         Todo: we should remove this check for thd->lex->describe on the next
         line. With SHOW EXPLAIN code, EXPLAIN printout code no longer depends

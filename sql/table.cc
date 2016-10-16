@@ -8305,16 +8305,17 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
   }
   if (!is_index_inited)
     h->ha_index_end();
+  re_setup_table(table);
   for (uint i=0; i < keyinfo->user_defined_key_parts; i++)
   {
-    if ((fld[i]->flags & BLOB_FLAG) &&  (fld[i]->flags & FIELD_EX_FREED))
+    if (keyinfo->key_part[i].key_part_flag & HA_FIELD_EX_FREED)
     {
       Field_blob *blb= static_cast<Field_blob *>(fld[i]);
       uchar * addr;
       blb->get_ptr(&addr);
       my_free(addr);
+      keyinfo->key_part[i].key_part_flag &= ~HA_FIELD_EX_FREED;
     }
   }
-  re_setup_table(table);
   return result;
 }

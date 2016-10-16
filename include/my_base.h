@@ -312,6 +312,8 @@ enum ha_base_keytype {
   Only used for HA_UNIQUE_HASH keys
 */ //TODO a better name ??
 #define HA_HASH_KEY_PART_FLAG   4096
+/* Field need to be frees externally */
+#define HA_FIELD_EX_FREED       8192
 	/* optionbits for database */
 #define HA_OPTION_PACK_RECORD		1
 #define HA_OPTION_PACK_KEYS		2

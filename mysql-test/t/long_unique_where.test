@@ -123,3 +123,4 @@ explain  select * from t1 where d='1' and b='4444' ;
 select * from t1 where d='1' and b='4444' ;
 explain  select * from t1 where b='1' and c='1';
 select * from t1 where b='1' and c='1';
+drop table t1;

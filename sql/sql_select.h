@@ -1739,8 +1739,6 @@ public:
   {
     to_field=field_arg->new_key_field(thd->mem_root, field_arg->table,
                                    ptr, length, null, 1, is_hash_key_part);
-    if (is_hash_key_part)
-      to_field->flags |= FIELD_EX_FREED;
   }
   store_key(store_key &arg)
     :Sql_alloc(), null_key(arg.null_key), hash_key(arg.hash_key),
