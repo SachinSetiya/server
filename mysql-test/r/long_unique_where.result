@@ -310,3 +310,24 @@ a	b	c	d
 1	1	1	1
 8	1	1	8
 drop table t1;
+#table with varchar and blob and int
+#basically unique key with non long components
+create table t1 (a blob , b int, c int , d varchar(30), e varchar(2000),unique(a,b,c,d,e));
+insert into t1 values(1,1,1,'1','1'),(2,2,2,'2','2'),(3,3,3,'3','3'),(4,4,4,'4','4'),(5,5,5,'5','5')
+,(6,6,6,'6','6'),(7,7,7,'7','7'),(8,8,8,'8','8'),(9,9,9,'9','9');
+insert into t1 values(1,1,1,'1','1');
+ERROR 23000: Duplicate entry '1-1-1-1-1' for key 'a'
+explain select * from t1 where a='1' and b=1 and c=1 and d='1' and e='1';
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	const	a	a	67	const,const,const,const,const	1	
+select * from t1 where a='1' and b=1 and c=1 and d='1' and e='1';
+a	b	c	d	e
+1	1	1	1	1
+explain select * from t1 where a='1' and b=1 and d='1' and e='1';
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	ref	a	a	18	const,const	1	Using index condition
+#keys with OR optimization wont work
+explain select * from t1 where a='1' and b=1 and c=1 or d='1' and e='1' ;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t1	ALL	a	NULL	NULL	NULL	9	Using where
+drop table t1;

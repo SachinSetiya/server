@@ -728,7 +728,19 @@ void close_thread_tables(THD *thd)
 
   DBUG_ASSERT(thd->transaction.stmt.is_empty() || thd->in_sub_stmt ||
               (thd->state_flags & Open_tables_state::BACKUPS_AVAIL));
-
+  for (table= thd->open_tables; table; table= table->next)
+  {
+    KEY_PART_INFO *key_part;
+    for (uint i=0; i < table->s->keys; i++)
+    {
+      for (uint j= 0; j < table->key_info[i].user_defined_key_parts; j++)
+      {
+        key_part= table->key_info[i].key_part + j;
+        if (key_part->key_part_flag & HA_FIELD_EX_FREED)
+          key_part->key_part_flag &= ~HA_FIELD_EX_FREED;
+      }
+    }
+  }
   /* Detach MERGE children after every statement. Even under LOCK TABLES. */
   for (table= thd->open_tables; table; table= table->next)
   {
@@ -829,7 +841,6 @@ void close_thread_tables(THD *thd)
   */
   while (thd->open_tables)
     (void) close_thread_table(thd, &thd->open_tables);
-
   DBUG_VOID_RETURN;
 }
 

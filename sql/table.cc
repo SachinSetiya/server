@@ -8314,7 +8314,6 @@ int get_hash_key(THD *thd,TABLE *table, handler *h,  uint key_index,
       uchar * addr;
       blb->get_ptr(&addr);
       my_free(addr);
-      keyinfo->key_part[i].key_part_flag &= ~HA_FIELD_EX_FREED;
     }
   }
   return result;
