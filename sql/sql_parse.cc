@@ -2656,6 +2656,8 @@ mysql_execute_command(THD *thd)
         !wsrep_is_show_query(lex->sql_command) &&
         !(thd->variables.wsrep_dirty_reads     &&
           lex->sql_command == SQLCOM_SELECT)   &&
+        !(lex->sql_command == SQLCOM_SELECT    &&
+          !all_tables)                         &&
         !wsrep_node_is_ready(thd))
       goto error;
   }
